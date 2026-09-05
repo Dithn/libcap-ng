@@ -473,6 +473,44 @@ static void test_unit_continuations(const char *dir)
 	free_config(&cfg);
 }
 
+/*
+ * test_exec_start_escapes - keep literal escapes and reject unhandled C escapes.
+ * @dir: temporary directory for unit fixtures.
+ *
+ * Returns no value; fails if unsupported syntax changes argv silently or
+ * supported quoting loses empty arguments, backslashes, or quote characters.
+ */
+static void test_exec_start_escapes(const char *dir)
+{
+	static const char *bad_units[] = {
+		"[Service]\nExecStart=/usr/bin/echo \"\\x41\"\n",
+		"[Service]\nExecStart=/usr/bin/echo '\\x41'\n",
+		"[Service]\nExecStart=/usr/bin/echo \\x41\n",
+		"[Service]\nExecStart=/usr/bin/echo \"\\s\"\n",
+		"[Service]\nExecStart=/usr/bin/echo \"\\q\"\n",
+	};
+	const char unit[] =
+		"[Service]\nExecStart=/usr/bin/echo \"two words\" '' "
+		"\"a\\\\b\" \"a\\\"b\" 'a\\'b'\n";
+	static const char *expected[] = {
+		"/usr/bin/echo", "two words", "", "a\\b", "a\"b", "a'b",
+	};
+	service_config_t cfg;
+	size_t i;
+
+	for (i = 0; i < sizeof(bad_units) / sizeof(bad_units[0]); i++)
+		expect_parse_failure(dir, "escape.service", bad_units[i]);
+	if (parse_unit(dir, "literal-escapes.service", unit, &cfg) != 0)
+		fail("Literal escapes and quoted words should parse");
+	if (cfg.exec_argc != sizeof(expected) / sizeof(expected[0]))
+		fail("Quoting changed the argument count");
+	for (i = 0; i < cfg.exec_argc; i++) {
+		if (strcmp(cfg.exec_argv[i], expected[i]))
+			fail("Literal escape or quoted argument changed");
+	}
+	free_config(&cfg);
+}
+
 int main(void)
 {
 	char dir[] = "/tmp/libcap-ng-service-XXXXXX";
@@ -491,6 +529,7 @@ int main(void)
 	test_capability_lists(dir);
 	test_exec_start_reset(dir);
 	test_unit_continuations(dir);
+	test_exec_start_escapes(dir);
 
 	rmdir(dir);
 	puts("cap-audit service credential tests passed");

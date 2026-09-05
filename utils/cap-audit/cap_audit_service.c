@@ -402,25 +402,31 @@ static int tokenize_exec_start(const char *value, char ***argv, size_t *argc)
 			goto out;
 		}
 
+		/*
+		 * systemd uses C escapes, including inside single quotes.
+		 * Support literal backslashes/quotes only; discarding the slash
+		 * from other escapes would silently change the command.
+		 */
+		if (*pos == '\\') {
+			if (pos[1] != '\\' && pos[1] != '\'' && pos[1] != '"') {
+				fprintf(stderr,
+					"Error: unsupported ExecStart escape\n");
+				goto out;
+			}
+			if (word_append(&word, *++pos) != 0)
+				goto out;
+			continue;
+		}
+
 		if (quote == 0) {
 			if (*pos == '\'' || *pos == '"') {
 				quote = *pos;
 				word.started = 1;
-			} else if (*pos == '\\') {
-				if (pos[1])
-					pos++;
-				if (word_append(&word, *pos) != 0)
-					goto out;
 			} else if (word_append(&word, *pos) != 0) {
 				goto out;
 			}
 		} else if (quote == *pos) {
 			quote = 0;
-		} else if (quote == '"' && *pos == '\\') {
-			if (pos[1])
-				pos++;
-			if (word_append(&word, *pos) != 0)
-				goto out;
 		} else if (word_append(&word, *pos) != 0) {
 			goto out;
 		}

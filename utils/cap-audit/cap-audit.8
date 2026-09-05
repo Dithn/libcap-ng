@@ -140,6 +140,10 @@ command is supported. Multiple commands, including oneshot sequences, are
 rejected. An empty assignment resets the command and permits a subsequent
 replacement.
 Unit-file line continuations are rejected; place each directive on one line.
+Command quoting supports single and double quotes, empty quoted arguments,
+and backslash escapes for literal backslashes and quote characters.
+Other escape sequences, such as hexadecimal or whitespace escapes, are
+rejected instead of being passed with a different meaning.
 .PP
 If a capability check targets a user namespace different from the namespace
 in which cap-audit started, the observation is retained in the diagnostic
