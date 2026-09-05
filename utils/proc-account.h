@@ -23,9 +23,5 @@ void proc_update_account_cache(uid_t uid, uid_t *last_uid,
 			       const char **cached_name)
 	__attr_access ((__read_write__, 2))
 	__attr_access ((__write_only__, 3));
-void netcap_update_account_cache(uid_t uid, uid_t *last_uid,
-				 const char **cached_name)
-	__attr_access ((__read_write__, 2))
-	__attr_access ((__write_only__, 3));
 
 #endif

@@ -123,7 +123,7 @@ static void test_account_formatting(void)
 		fail("Large unmapped euid should retain its numeric value");
 
 	/* A failed lookup must not leave the previous cached name in place. */
-	netcap_update_account_cache(missing_uid, &last_uid, &cached_name);
+	proc_update_account_cache(missing_uid, &last_uid, &cached_name);
 	if (cached_name != NULL)
 		fail("Missing passwd entry should clear stale cached name");
 	if (last_uid != missing_uid)

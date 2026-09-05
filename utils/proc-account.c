@@ -83,17 +83,3 @@ void proc_update_account_cache(uid_t uid, uid_t *last_uid,
 	if (p)
 		*cached_name = p->pw_name;
 }
-
-/*
- * netcap_update_account_cache - compatibility wrapper for netcap callers.
- * @uid: effective UID to format.
- * @last_uid: caller's cached UID value, updated when @uid is looked up.
- * @cached_name: caller's cached passwd name pointer, updated in place.
- *
- * Returns no value.
- */
-void netcap_update_account_cache(uid_t uid, uid_t *last_uid,
-				 const char **cached_name)
-{
-	proc_update_account_cache(uid, last_uid, cached_name);
-}

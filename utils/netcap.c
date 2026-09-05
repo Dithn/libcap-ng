@@ -311,7 +311,7 @@ static void report_finding(const lnode *n, unsigned int port, const char *type,
 			"capabilities");
 		header = 1;
 	}
-	netcap_update_account_cache(n->uid, &last_uid, (const char **)&tacct);
+	proc_update_account_cache(n->uid, &last_uid, (const char **)&tacct);
 	if (tacct) {
 		printf("%-7d %-7d %-16s", n->ppid, n->pid, tacct);
 	} else
