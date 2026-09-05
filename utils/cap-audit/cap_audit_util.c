@@ -237,16 +237,6 @@ void update_reason_to(char **target, int syscall_nr)
 		*target = NULL;
 }
 
-void update_reason(struct cap_check *check, int syscall_nr)
-{
-	update_reason_to(&check->reason, syscall_nr);
-}
-
-void update_reason_op(struct cap_check *check, int syscall_nr)
-{
-	update_reason_to(&check->op_reason, syscall_nr);
-}
-
 int cap_required_union(const struct cap_check *check)
 {
 	return check->granted > 0 || check->op_granted > 0;

@@ -234,7 +234,7 @@ int handle_cap_event(void *ctx __attribute__((unused)), void *data,
 			}
 			if (e->result > 0 && check->op_needed != 1) {
 				check->op_needed = 1;
-				update_reason_op(check, e->syscall_nr);
+				update_reason_to(&check->op_reason, e->syscall_nr);
 			}
 		} else {
 			check->count++;
@@ -247,7 +247,7 @@ int handle_cap_event(void *ctx __attribute__((unused)), void *data,
 
 			if (e->result > 0 && check->needed != 1) {
 				check->needed = 1;
-				update_reason(check, e->syscall_nr);
+				update_reason_to(&check->reason, e->syscall_nr);
 			}
 		}
 	}

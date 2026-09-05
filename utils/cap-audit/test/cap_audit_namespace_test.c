@@ -33,15 +33,16 @@ const char *syscall_name_from_nr(int nr)
 	return "mount";
 }
 
-void update_reason(struct cap_check *check, int syscall_nr)
+/*
+ * update_reason_to - omit diagnostic allocation in namespace-only tests.
+ * @target: unused diagnostic destination.
+ * @syscall_nr: unused syscall number.
+ *
+ * Returns no value; namespace assertions do not depend on reason text.
+ */
+void update_reason_to(char **target, int syscall_nr)
 {
-	(void)check;
-	(void)syscall_nr;
-}
-
-void update_reason_op(struct cap_check *check, int syscall_nr)
-{
-	(void)check;
+	(void)target;
 	(void)syscall_nr;
 }
 

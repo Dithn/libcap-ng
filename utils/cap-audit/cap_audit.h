@@ -224,10 +224,6 @@ char *json_escape(const char *input)
 	__wur;
 void update_reason_to(char **target, int syscall_nr)
 	__attr_access ((__read_write__, 1));
-void update_reason(struct cap_check *check, int syscall_nr)
-	__attr_access ((__read_write__, 1));
-void update_reason_op(struct cap_check *check, int syscall_nr)
-	__attr_access ((__read_write__, 1));
 int cap_required_union(const struct cap_check *check)
 	__attr_access ((__read_only__, 1))
 	__attribute_pure__;

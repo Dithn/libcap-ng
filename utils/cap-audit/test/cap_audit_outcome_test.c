@@ -95,18 +95,20 @@ char *json_escape(const char *input)
 	return input ? strdup(input) : strdup("");
 }
 
-void update_reason(struct cap_check *check, int syscall_nr)
+/*
+ * update_reason_to - provide deterministic reasons for synthetic syscalls.
+ * @target: caller-owned startup or operational reason to replace.
+ * @syscall_nr: synthetic syscall number.
+ *
+ * Returns no value; replaces the reason with allocated text or NULL.
+ */
+void update_reason_to(char **target, int syscall_nr)
 {
 	const char *name = syscall_name_from_nr(syscall_nr);
 
-	if (asprintf(&check->reason, "Used by %s", name ? name : "unknown") < 0)
-		check->reason = NULL;
-}
-
-void update_reason_op(struct cap_check *check, int syscall_nr)
-{
-	(void)check;
-	(void)syscall_nr;
+	free(*target);
+	if (asprintf(target, "Used by %s", name ? name : "unknown") < 0)
+		*target = NULL;
 }
 
 int cap_required_union(const struct cap_check *check)
@@ -520,6 +522,8 @@ static void test_optional_setpcap(void)
 		fail("Non-optional SETPCAP use was suppressed");
 
 	/* Optional use must not erase an explicit successful capset request. */
+	free(check->reason);
+	free(check->op_reason);
 	memset(check, 0, sizeof(*check));
 	state.foreign_target_ns_observed = false;
 	emit_capset(0, 1ULL << CAP_SETPCAP, 1ULL << CAP_SETPCAP, 0);
@@ -530,9 +534,32 @@ static void test_optional_setpcap(void)
 	free(output);
 }
 
+/*
+ * test_event_reasons - keep startup and operational reasons independent.
+ *
+ * Returns no value; fails if either event branch selects the wrong field
+ * when calling the shared reason helper.
+ */
+static void test_event_reasons(void)
+{
+	struct cap_check *check = &state.app.checks[CAP_CHOWN];
+
+	memset(&state, 0, sizeof(state));
+	state.app.pid = 1234;
+	emit_check(CAP_CHOWN, TEST_OPENAT_NR, 1);
+	state.capset_observed = true;
+	emit_check(CAP_CHOWN, TEST_IOCTL_NR, 1);
+	if (!check->reason || strcmp(check->reason, "Used by openat") ||
+	    !check->op_reason || strcmp(check->op_reason, "Used by ioctl"))
+		fail("Startup and operational reasons were not kept separate");
+	free(check->reason);
+	free(check->op_reason);
+}
+
 int main(void)
 {
 	test_capset_without_setpcap();
+	test_event_reasons();
 	test_optional_setpcap();
 	if (classify_syscall_outcome(0) != SYSCALL_OUTCOME_SUCCESS ||
 	    classify_syscall_outcome(-EPERM) != SYSCALL_OUTCOME_PERMISSION ||
