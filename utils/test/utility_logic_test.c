@@ -3,9 +3,8 @@
  * Copyright 2026 Red Hat Inc.
  * All Rights Reserved.
  *
- * This test links the real pscap.c and netcap.c objects with their main()
- * functions compiled out. That keeps make check close to production code
- * for utility-local helpers that are not worth moving into shared modules.
+ * Exercise shared output directly and link netcap's local parsing helpers
+ * with main() compiled out. Tests must cover the paths the utilities use.
  */
 
 #include "config.h"
@@ -13,10 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "proc-llist.h"
+#include "proc-output.h"
 
-size_t wrap_to(const char *text, size_t max);
 int parse_u32_hex_or_dec(const char *s, unsigned int *out);
 
 static void fail(const char *msg)
@@ -25,15 +25,53 @@ static void fail(const char *msg)
 	exit(EXIT_FAILURE);
 }
 
-static void test_wrap_to(void)
+static void test_tree_output(void)
 {
-	/* pscap tree output should wrap cleanly on separators when possible. */
-	if (wrap_to("cap_chown, cap_setuid", 12) != 11)
-		fail("wrap_to should break after comma");
-	if (wrap_to("alpha beta", 7) != 6)
-		fail("wrap_to should prefer spaces");
-	if (wrap_to("abcdefgh", 4) != 4)
-		fail("wrap_to should hard-wrap when no separator exists");
+	const char *expected =
+		"cap_chown, \ncap_setuid\n"
+		"alpha beta \ngamma\n"
+		"abcdefghij\nklmn\n"
+		"\033[31malpha beta \033[0m\n\033[31mgamma\033[0m\n"
+		"root\n├─ child\n│  └─ grandchild\n└─ last\n";
+	char prefix[32], long_prefix[601], output[2048];
+	FILE *file = tmpfile();
+	int saved = dup(STDOUT_FILENO);
+	size_t len;
+
+	if (!file || saved < 0 || fflush(stdout) ||
+	    dup2(fileno(file), STDOUT_FILENO) < 0)
+		fail("Cannot capture tree output");
+	proc_print_wrapped("", "", "cap_chown, cap_setuid", 12);
+	proc_print_wrapped("", "", "alpha beta gamma", 12);
+	proc_print_wrapped("", "", "abcdefghijklmn", 10);
+	proc_print_wrapped("", "", "\033[31malpha beta gamma\033[0m", 12);
+	proc_tree_print_node(NULL, 1, "root", 80);
+	proc_tree_build_child_prefix(prefix, sizeof(prefix), NULL, 1);
+	if (prefix[0])
+		fail("Root should not add a branch");
+	proc_tree_print_node(prefix, 0, "child", 80);
+	proc_tree_build_child_prefix(prefix, sizeof(prefix), "", 0);
+	proc_tree_print_node(prefix, 1, "grandchild", 80);
+	proc_tree_print_node("", 1, "last", 80);
+	proc_tree_build_child_prefix(prefix, sizeof(prefix), "", 1);
+	if (strcmp(prefix, "   "))
+		fail("Last sibling should not extend the vertical branch");
+	/* Recursive pscap trees must not inherit netcap's old 512-byte cap. */
+	memset(long_prefix, ' ', sizeof(long_prefix) - 1);
+	long_prefix[sizeof(long_prefix) - 1] = '\0';
+	proc_tree_print_node(long_prefix, 1, "deep", 80);
+	if (fflush(stdout) || dup2(saved, STDOUT_FILENO) < 0)
+		fail("Cannot restore stdout");
+	close(saved);
+	rewind(file);
+	len = fread(output, 1, sizeof(output) - 1, file);
+	output[len] = '\0';
+	fclose(file);
+	if (strncmp(output, expected, strlen(expected)) ||
+	    strncmp(output + strlen(expected), long_prefix,
+		    strlen(long_prefix)) ||
+	    strcmp(output + strlen(expected) + strlen(long_prefix), "└─ deep\n"))
+		fail("Unexpected wrapped tree output");
 }
 
 static void test_parse_u32_hex_or_dec(void)
@@ -109,7 +147,7 @@ static void test_list_inode_iteration(void)
 
 int main(void)
 {
-	test_wrap_to();
+	test_tree_output();
 	test_parse_u32_hex_or_dec();
 	test_list_inode_iteration();
 	puts("Direct utility logic tests passed");

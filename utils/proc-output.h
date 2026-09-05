@@ -16,9 +16,6 @@
 #include "gcc-attributes.h"
 
 int proc_output_width(void);
-size_t proc_wrap_plain(const char *text, size_t max)
-	__attr_access ((__read_only__, 1))
-	__attribute_pure__;
 void proc_print_wrapped(const char *head, const char *cont, const char *text,
 			int width)
 	__attr_access ((__read_only__, 1))

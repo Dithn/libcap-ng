@@ -52,35 +52,6 @@ int proc_output_width(void)
 }
 
 /*
- * proc_wrap_plain - choose a wrap index for plain text.
- * @text: source string to wrap.
- * @max: maximum number of bytes to include before wrapping.
- *
- * Returns the byte offset where output should wrap, preferring commas and
- * spaces when possible.
- */
-size_t proc_wrap_plain(const char *text, size_t max)
-{
-	size_t len = strlen(text);
-	size_t i;
-
-	if (len <= max)
-		return len;
-
-	for (i = max; i > 0; i--) {
-		if (text[i - 1] == ',') {
-			if (i < len && text[i] == ' ')
-				return i + 1;
-			return i;
-		}
-		if (text[i - 1] == ' ')
-			return i;
-	}
-
-	return max;
-}
-
-/*
  * skip_ansi_sgr - skip one ANSI SGR escape sequence.
  * @text: source string that may contain an SGR sequence at @i.
  * @i: byte offset to inspect.
@@ -240,7 +211,7 @@ void proc_print_wrapped(const char *head, const char *cont, const char *text,
 
 /*
  * proc_tree_print_node - print one wrapped tree node.
- * @prefix: existing tree prefix before this node.
+ * @prefix: existing tree prefix, or NULL for an unadorned root.
  * @is_last: non-zero when this node is the last sibling.
  * @txt: node text to render.
  * @width: target terminal width.
@@ -250,21 +221,33 @@ void proc_print_wrapped(const char *head, const char *cont, const char *text,
 void proc_tree_print_node(const char *prefix, int is_last, const char *txt,
 			  int width)
 {
-	char head[512];
-	char cont[512];
+	char *head, *cont;
+	size_t size;
 
-	snprintf(head, sizeof(head), "%s%s", prefix,
+	if (!prefix) {
+		proc_print_wrapped("", "", txt, width);
+		return;
+	}
+	/* pscap trees have no fixed depth; do not truncate ancestor branches. */
+	size = strlen(prefix) + sizeof("├─ ");
+	head = malloc(size);
+	cont = malloc(size);
+	if (!head || !cont)
+		goto out;
+	snprintf(head, size, "%s%s", prefix,
 		 is_last ? "└─ " : "├─ ");
-	snprintf(cont, sizeof(cont), "%s%s", prefix,
-		 is_last ? "   " : "│  ");
+	proc_tree_build_child_prefix(cont, size, prefix, is_last);
 	proc_print_wrapped(head, cont, txt, width);
+out:
+	free(head);
+	free(cont);
 }
 
 /*
  * proc_tree_build_child_prefix - extend a tree prefix for child nodes.
  * @dst: destination buffer receiving the child prefix.
  * @dst_sz: size of @dst in bytes.
- * @prefix: parent prefix to extend.
+ * @prefix: parent prefix to extend, or NULL for an unadorned root.
  * @parent_is_last: non-zero when the parent is the last sibling.
  *
  * Returns no value.
@@ -272,6 +255,6 @@ void proc_tree_print_node(const char *prefix, int is_last, const char *txt,
 void proc_tree_build_child_prefix(char *dst, size_t dst_sz, const char *prefix,
 				  int parent_is_last)
 {
-	snprintf(dst, dst_sz, "%s%s", prefix,
-		 parent_is_last ? "   " : "│  ");
+	snprintf(dst, dst_sz, "%s%s", prefix ? prefix : "",
+		 !prefix ? "" : parent_is_last ? "   " : "│  ");
 }

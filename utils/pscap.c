@@ -43,7 +43,6 @@
 #define ACCOUNT_LEN 32
 #define USERNS_MARK_LEN 3	// two characters plus '\0'.
 
-#ifndef PSCAP_NO_MAIN
 static void usage(void)
 {
 	fprintf(stderr, "usage: pscap [-a] [-p pid] [--tree]\n");
@@ -96,28 +95,6 @@ static void get_account_name(int pid, char *account, size_t account_len)
 
 	proc_format_account_name_from_euid(euid, account, account_len);
 }
-#endif
-
-#ifdef PSCAP_TEST
-/*
- * wrap_to - test-visible wrapper for the shared plain text wrap helper.
- * @text: source string to wrap.
- * @max: maximum number of bytes to include before wrapping.
- *
- * Returns the byte offset where output should wrap.
- */
-size_t wrap_to(const char *text, size_t max)
-{
-	return proc_wrap_plain(text, max);
-}
-#endif
-
-#ifndef PSCAP_NO_MAIN
-/*
- * utility_logic_test only needs wrap_to(). Keep the rest of the pscap
- * implementation out of PSCAP_NO_MAIN builds so the test object does not
- * accumulate main-program helpers that trigger unused-function warnings.
- */
 
 /*
  * compare_pid - order processes by pid for sorting/bsearch
@@ -207,81 +184,54 @@ static char *format_caps(int caps, bool ambient, bool bounds)
 	return text;
 }
 
-/*
- * print_tree_node - render a node and its children in tree mode
- * @procs: process array
- * @count: number of entries in @procs
- * @index: index of current node in @procs
- * @prefix: current line prefix
- * @is_last: true if this node is the last child of its parent
- * @is_root: true if this node is a tree root
- *
- * Returns nothing. Recurses through children to emit full subtree.
- */
-static void print_tree_node(struct proc_info *procs, size_t count,
-			    size_t index, const char *prefix, bool is_last,
-			    bool is_root, int width)
+struct proc_tree {
+	struct proc_info *procs;
+	size_t count;
+	int width;
+};
+
+/* A NULL prefix identifies a root; descendants share netcap's renderer. */
+static void print_tree_node(const struct proc_tree *tree,
+			    const struct proc_info *proc, const char *prefix,
+			    bool is_last)
 {
-	struct proc_info *proc = &procs[index];
 	size_t child_total = 0;
 	size_t child_seen = 0;
 	size_t i;
 	char head[64];
-	const char *branch = "";
 	char *text;
 	size_t text_len;
-	char *line_prefix;
 	char *cont_prefix;
+	size_t prefix_len = (prefix ? strlen(prefix) : 0) + sizeof("│  ");
 
-	if (!is_root)
-		branch = is_last ? "   " : "│  ";
-
-	line_prefix = malloc(strlen(prefix) + strlen(is_root ? "" :
-					      (is_last ? "└─ " : "├─ ")) + 1);
-	if (!line_prefix)
+	cont_prefix = malloc(prefix_len);
+	if (!cont_prefix)
 		return;
-	strcpy(line_prefix, prefix);
-	if (!is_root)
-		strcat(line_prefix, is_last ? "└─ " : "├─ ");
-
-	cont_prefix = malloc(strlen(prefix) + strlen(branch) + 1);
-	if (!cont_prefix) {
-		free(line_prefix);
-		return;
-	}
-	strcpy(cont_prefix, prefix);
-	strcat(cont_prefix, branch);
+	proc_tree_build_child_prefix(cont_prefix, prefix_len, prefix, is_last);
 
 	snprintf(head, sizeof(head), "%s(%d:%s) [", proc->cmd,
 		 proc->pid, proc->account);
 	text_len = strlen(head) + strlen(proc->caps_text) + 2;
 	text = malloc(text_len);
 	if (!text) {
-		free(line_prefix);
 		free(cont_prefix);
 		return;
 	}
 	snprintf(text, text_len, "%s%s]", head, proc->caps_text);
-	proc_print_wrapped(line_prefix, cont_prefix, text, width);
+	proc_tree_print_node(prefix, is_last, text, tree->width);
 	free(text);
-	free(line_prefix);
 
-	for (i = 0; i < count; i++) {
-		if (procs[i].ppid == proc->pid)
+	for (i = 0; i < tree->count; i++) {
+		if (tree->procs[i].ppid == proc->pid)
 			child_total++;
 	}
 
-	if (child_total == 0) {
-		free(cont_prefix);
-		return;
-	}
-
-	for (i = 0; i < count; i++) {
-		if (procs[i].ppid != proc->pid)
+	for (i = 0; i < tree->count; i++) {
+		if (tree->procs[i].ppid != proc->pid)
 			continue;
 		child_seen++;
-		print_tree_node(procs, count, i, cont_prefix,
-				child_seen == child_total, false, width);
+		print_tree_node(tree, &tree->procs[i], cont_prefix,
+				child_seen == child_total);
 	}
 
 	free(cont_prefix);
@@ -297,13 +247,13 @@ static void print_tree_node(struct proc_info *procs, size_t count,
 static void print_tree(struct proc_info *procs, size_t count)
 {
 	size_t i;
-	int width = proc_output_width();
+	struct proc_tree tree = { procs, count, proc_output_width() };
 
 	if (count > 1)
 		qsort(procs, count, sizeof(*procs), compare_pid);
 	for (i = 0; i < count; i++) {
 		if (!find_proc(procs, count, procs[i].ppid))
-			print_tree_node(procs, count, i, "", true, true, width);
+			print_tree_node(&tree, &procs[i], NULL, true);
 	}
 }
 
@@ -335,7 +285,6 @@ static bool in_child_userns(int pid)
 	return statbuf.st_ino != own_ns_inode || statbuf.st_dev != own_ns_dev;
 }
 
-#ifndef PSCAP_NO_MAIN
 int main(int argc, char *argv[])
 {
 	char *endptr = NULL;
@@ -551,5 +500,3 @@ int main(int argc, char *argv[])
 	}
 	return 0;
 }
-#endif
-#endif
