@@ -89,14 +89,6 @@
  * while CAP_OPT_NOAUDIT confirms that the event followed the advisory path
  * rather than a security-gating path on the same syscall.
  *
- * Layer 3 - final drain shutdown backstop:
- * after waitpid() reports that the initial PID has exited, cap-audit does a
- * short final ring-buffer drain before analyzing results. That drain should
- * stay conservative because queued late SYS_ADMIN/SETPCAP checks from the
- * exiting interpreter/runtime are more likely to be teardown chatter than a
- * meaningful application requirement. The shutdown backstop is intentionally
- * limited to the initial PID and only applies during that final drain.
- *
  * PID filtering remains central: parent registers the child immediately after
  * fork(), BPF follows forks/exits to keep the target set precise, and each
  * event carries capability, syscall context, namespace info, and result for
@@ -577,8 +569,7 @@ int main(int argc, char **argv)
 
 	printf("[*] Analyzing results...\n");
 
-	state.shutting_down = 1;
-	usleep(100000);
+	/* Queued events remain evidence even after the target has exited. */
 	ring_buffer__poll(state.rb, 0);
 
 	if (state.json_output)

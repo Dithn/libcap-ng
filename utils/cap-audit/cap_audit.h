@@ -197,7 +197,6 @@ struct audit_state {
 	__u32 baseline_user_ns_inum;
 	bool foreign_target_ns_observed;
 	volatile sig_atomic_t stop;
-	int shutting_down;
 	char *service_file;
 	service_config_t *service_cfg;
 };

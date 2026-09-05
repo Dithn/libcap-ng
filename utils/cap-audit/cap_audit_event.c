@@ -19,7 +19,7 @@
  *   Portions of this code were made with codex 5.2
  */
 
-/* Ring buffer event processing: noise filtering, shutdown backstop,
+/* Ring buffer event processing: noise filtering
  * and per-capability accounting for observed checks.
  */
 
@@ -41,21 +41,6 @@ static int is_always_noise(const struct cap_event *e)
 	     e->syscall_nr == state.app.mmap_nr ||
 	     e->syscall_nr == state.app.mprotect_nr ||
 	     e->syscall_nr == state.app.mremap_nr))
-		return 1;
-
-	return 0;
-}
-
-static int is_shutdown_noise(const struct cap_event *e)
-{
-	if (!state.shutting_down)
-		return 0;
-
-	if (e->pid != (__u32)state.app.pid)
-		return 0;
-
-	if (e->capability == CAP_SYS_ADMIN ||
-	    e->capability == CAP_SETPCAP)
 		return 1;
 
 	return 0;
@@ -109,9 +94,6 @@ static void handle_syscall_result(const struct cap_event *e)
 		check = &state.app.checks[cap];
 		/* Ignore outcomes for capability events filtered by userspace. */
 		if (!check_has_denied_syscall(check, e->syscall_nr))
-			continue;
-		if (state.shutting_down && e->pid == (__u32)state.app.pid &&
-		    (cap == CAP_SYS_ADMIN || cap == CAP_SETPCAP))
 			continue;
 		if (add_cap_syscall_outcome(check, e->syscall_nr,
 					    e->syscall_ret) != 0 && state.verbose)
@@ -193,16 +175,6 @@ int handle_cap_event(void *ctx __attribute__((unused)), void *data,
 				       syscall_name_from_nr(e->syscall_nr) ?:
 				       "unknown");
 		}
-		return 0;
-	}
-
-	if (is_shutdown_noise(e)) {
-		if (state.verbose)
-			printf("[CAP] Filtered shutdown noise: "
-			       "cap=%s syscall=%s\n",
-			       cap_name_safe(e->capability),
-			       syscall_name_from_nr(e->syscall_nr) ?:
-			       "unknown");
 		return 0;
 	}
 
