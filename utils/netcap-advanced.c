@@ -856,6 +856,40 @@ static int pidset_test_and_add(struct pidset *ps, int pid)
 	return 0;
 }
 
+static const struct {
+	unsigned int bit;
+	const char *name;
+	const char *color;
+} flag_names[] = {
+	{ FLAG_PROXIMITY_PLANE, "proximity-plane", COLOR_YELLOW },
+	{ FLAG_HYPERVISOR_PLANE, "hypervisor-plane", COLOR_YELLOW },
+	{ FLAG_SSH_VSOCK_22, "ssh-on-vsock-port-22", NULL },
+	{ FLAG_WILDCARD_BIND, "wildcard-bind", COLOR_YELLOW },
+	{ FLAG_REUSEPORT, "reuseport", COLOR_YELLOW },
+	{ FLAG_PRIVILEGED_CAPS, "privileged-caps", NULL },
+};
+
+/* Keep tree and JSON flag selection identical, including VSOCK exclusions. */
+static unsigned int process_flags(const struct process_info *p,
+				  const struct endpoint *e)
+{
+	unsigned int flags = p->has_privileged_caps ? FLAG_PRIVILEGED_CAPS : 0;
+
+	if (e->plane == PLANE_VSOCK) {
+		flags |= FLAG_HYPERVISOR_PLANE;
+		if (e->port == 22)
+			flags |= FLAG_SSH_VSOCK_22;
+	} else {
+		if (e->plane == PLANE_BLUETOOTH)
+			flags |= FLAG_PROXIMITY_PLANE;
+		if (e->wildcard_bind)
+			flags |= FLAG_WILDCARD_BIND;
+		if (e->reuseport)
+			flags |= FLAG_REUSEPORT;
+	}
+	return flags;
+}
+
 /*
  * print_flag_nodes - render endpoint/process flag leaves under "flags" node.
  * @pfx_flags: tree prefix for flag child lines.
@@ -869,42 +903,30 @@ static int pidset_test_and_add(struct pidset *ps, int pid)
 static void print_flag_nodes(const char *pfx_flags, int width,
 	unsigned int flags, enum cap_severity priv_sev)
 {
-	static const struct {
-		unsigned int bit;
-		const char *name;
-		const char *color;
-	} map[] = {
-		{ FLAG_PROXIMITY_PLANE, "proximity-plane", COLOR_YELLOW },
-		{ FLAG_HYPERVISOR_PLANE, "hypervisor-plane", COLOR_YELLOW },
-		{ FLAG_SSH_VSOCK_22, "ssh-on-vsock-port-22", NULL },
-		{ FLAG_WILDCARD_BIND, "wildcard-bind", COLOR_YELLOW },
-		{ FLAG_REUSEPORT, "reuseport", COLOR_YELLOW },
-		{ FLAG_PRIVILEGED_CAPS, "privileged-caps", NULL },
-	};
 	size_t i;
 	size_t n = 0;
 	size_t printed = 0;
 	char node[256];
 
-	for (i = 0; i < sizeof(map) / sizeof(map[0]); i++)
-		if (flags & map[i].bit)
+	for (i = 0; i < sizeof(flag_names) / sizeof(flag_names[0]); i++)
+		if (flags & flag_names[i].bit)
 			n++;
 	if (!n) {
 		proc_tree_print_node(pfx_flags, 1, "(none)", width);
 		return;
 	}
-	for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
-		const char *color = map[i].color;
+	for (i = 0; i < sizeof(flag_names) / sizeof(flag_names[0]); i++) {
+		const char *color = flag_names[i].color;
 
-		if (!(flags & map[i].bit))
+		if (!(flags & flag_names[i].bit))
 			continue;
-		if (map[i].bit == FLAG_PRIVILEGED_CAPS)
+		if (flag_names[i].bit == FLAG_PRIVILEGED_CAPS)
 			color = sev_color(priv_sev);
 		if (use_color && color)
-			snprintf(node, sizeof(node), "%s%s%s", color, map[i].name,
+			snprintf(node, sizeof(node), "%s%s%s", color, flag_names[i].name,
 				COLOR_RESET);
 		else
-			snprintf(node, sizeof(node), "%s", map[i].name);
+			snprintf(node, sizeof(node), "%s", flag_names[i].name);
 		printed++;
 		proc_tree_print_node(pfx_flags, printed == n, node, width);
 	}
@@ -2710,6 +2732,17 @@ static int bind_sort_cmp(const char *a, const char *b)
 	return strcmp(a, b);
 }
 
+/* Unknown defense states stay uncolored rather than implying protection. */
+static const char *defense_color(const char *value)
+{
+	if (!strcmp(value, "yes") || !strcmp(value, "filter") ||
+	    !strcmp(value, "strict"))
+		return COLOR_GREEN;
+	if (!strcmp(value, "no") || !strcmp(value, "disabled"))
+		return COLOR_YELLOW;
+	return "";
+}
+
 /*
  * render_tree_process_details - emit one process subtree under an endpoint.
  * @prefix: parent tree prefix for process node.
@@ -2729,11 +2762,20 @@ static void render_tree_process_details(const char *prefix,
 {
 	char pfx_child[256], pfx_def[256], pfx_flags[256];
 	char line[4096];
-	const char *def_nodes[8];
-	char def_buf[8][512];
-	size_t def_n = 0;
+	const struct defense_info *d = &p->defenses;
+	const struct {
+		const char *name, *value, *color;
+	} defenses[] = {
+		{ DEFENSES_RUNS_AS_KEY, d->runs_as_nonroot,
+		  defense_color(d->runs_as_nonroot) },
+		{ "no_new_privs", d->no_new_privs, defense_color(d->no_new_privs) },
+		{ "seccomp", d->seccomp, defense_color(d->seccomp) },
+		{ "lsm", d->lsm_label, !d->lsm_label || !d->lsm_label[0] ? "" :
+		  strstr(d->lsm_label, "unconfined_t") ? COLOR_ORANGE : COLOR_GREEN },
+	};
+	size_t def_n = d->lsm_label ? 4 : 3;
 	size_t ai;
-	unsigned int flags = 0;
+	unsigned int flags = process_flags(p, e);
 	enum cap_severity priv_sev = caps_worst_severity(p->caps);
 
 	snprintf(line, sizeof(line), "%s (pid=%d uid=%u%s%s%s%s)",
@@ -2814,73 +2856,17 @@ static void render_tree_process_details(const char *prefix,
 		proc_tree_print_node(pfx_child, 0, line, width);
 	}
 
-	snprintf(def_buf[def_n], sizeof(def_buf[def_n]),
-		DEFENSES_RUNS_AS_KEY ": %s%s%s",
-		strcmp(p->defenses.runs_as_nonroot, "yes") == 0 && use_color ? COLOR_GREEN :
-		(strcmp(p->defenses.runs_as_nonroot, "no") == 0 && use_color ? COLOR_YELLOW : ""),
-		p->defenses.runs_as_nonroot,
-		use_color && (strcmp(p->defenses.runs_as_nonroot, "yes") == 0 ||
-		 strcmp(p->defenses.runs_as_nonroot, "no") == 0) ? COLOR_RESET : "");
-	def_nodes[def_n] = def_buf[def_n];
-	def_n++;
-
-	if (strcmp(p->defenses.no_new_privs, "yes") == 0 && use_color)
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "no_new_privs: %syes%s",
-			COLOR_GREEN, COLOR_RESET);
-	else if (strcmp(p->defenses.no_new_privs, "no") == 0 && use_color)
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "no_new_privs: %sno%s",
-			COLOR_YELLOW, COLOR_RESET);
-	else
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "no_new_privs: %s",
-			p->defenses.no_new_privs);
-	def_nodes[def_n] = def_buf[def_n];
-	def_n++;
-
-	if ((strcmp(p->defenses.seccomp, "filter") == 0 ||
-	     strcmp(p->defenses.seccomp, "strict") == 0) && use_color)
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "seccomp: %s%s%s",
-			COLOR_GREEN, p->defenses.seccomp, COLOR_RESET);
-	else if (strcmp(p->defenses.seccomp, "disabled") == 0 && use_color)
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "seccomp: %sdisabled%s",
-			COLOR_YELLOW, COLOR_RESET);
-	else
-		snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "seccomp: %s",
-			p->defenses.seccomp);
-	def_nodes[def_n] = def_buf[def_n];
-	def_n++;
-
-	if (p->defenses.lsm_label) {
-		if (use_color && strstr(p->defenses.lsm_label, "unconfined_t"))
-			snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "lsm: %s%s%s",
-				COLOR_ORANGE, p->defenses.lsm_label, COLOR_RESET);
-		else if (use_color && p->defenses.lsm_label[0])
-			snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "lsm: %s%s%s",
-				COLOR_GREEN, p->defenses.lsm_label, COLOR_RESET);
-		else
-			snprintf(def_buf[def_n], sizeof(def_buf[def_n]), "lsm: %s",
-				p->defenses.lsm_label);
-		def_nodes[def_n] = def_buf[def_n];
-		def_n++;
-	}
 	proc_tree_print_node(pfx_child, 0, "defenses", width);
 	proc_tree_build_child_prefix(pfx_def, sizeof(pfx_def), pfx_child, 0);
-	for (ai = 0; ai < def_n; ai++)
-		proc_tree_print_node(pfx_def, ai + 1 == def_n, def_nodes[ai], width);
+	for (ai = 0; ai < def_n; ai++) {
+		char defense[512];
+		const char *color = use_color ? defenses[ai].color : "";
 
-	if (e->plane == PLANE_VSOCK) {
-		flags |= FLAG_HYPERVISOR_PLANE;
-		if (e->port == 22)
-			flags |= FLAG_SSH_VSOCK_22;
-	} else {
-		if (e->plane == PLANE_BLUETOOTH)
-			flags |= FLAG_PROXIMITY_PLANE;
-		if (e->wildcard_bind)
-			flags |= FLAG_WILDCARD_BIND;
-		if (e->reuseport)
-			flags |= FLAG_REUSEPORT;
+		snprintf(defense, sizeof(defense), "%s: %s%s%s",
+			 defenses[ai].name, color, defenses[ai].value,
+			 color[0] ? COLOR_RESET : "");
+		proc_tree_print_node(pfx_def, ai + 1 == def_n, defense, width);
 	}
-	if (p->has_privileged_caps)
-		flags |= FLAG_PRIVILEGED_CAPS;
 
 	proc_tree_print_node(pfx_child, 1, "flags", width);
 	proc_tree_build_child_prefix(pfx_flags, sizeof(pfx_flags), pfx_child, 1);
@@ -2901,7 +2887,9 @@ static void render_json_process(struct process_info *p,
 				const struct endpoint *ep,
 				const char *indent)
 {
+	unsigned int flags = process_flags(p, ep);
 	int firstf = 1;
+	size_t i;
 
 	printf("%s{\"comm\": ", indent);
 	json_escape(p->comm);
@@ -2937,269 +2925,146 @@ static void render_json_process(struct process_info *p,
 	}
 	printf("}, \"flags\": [");
 
-	if (ep->plane == PLANE_VSOCK) {
-		json_escape("hypervisor-plane");
-		firstf = 0;
-		if (ep->port == 22) {
-			printf(", ");
-			json_escape("ssh-on-vsock-port-22");
-		}
-	} else {
-		if (ep->plane == PLANE_BLUETOOTH) {
-			json_escape("proximity-plane");
-			firstf = 0;
-		}
-		if (ep->wildcard_bind) {
-			if (!firstf)
-				printf(", ");
-			json_escape("wildcard-bind");
-			firstf = 0;
-		}
-		if (ep->reuseport) {
-			if (!firstf)
-				printf(", ");
-			json_escape("reuseport");
-			firstf = 0;
-		}
-	}
-	if (p->has_privileged_caps) {
+	for (i = 0; i < sizeof(flag_names) / sizeof(flag_names[0]); i++) {
+		if (!(flags & flag_names[i].bit))
+			continue;
 		if (!firstf)
 			printf(", ");
-		json_escape("privileged-caps");
+		json_escape(flag_names[i].name);
+		firstf = 0;
 	}
 	printf("]}");
 }
 
 
+/* Endpoints in a displayed port group can repeat owners across ifaddrs. */
+static void render_tree_processes(const char *prefix, int width,
+				 const struct endpoint *eps, size_t count)
+{
+	struct pidset seen;
+	size_t i, j;
+
+	if (pidset_init(&seen))
+		return;
+	for (i = 0; i < count; i++) {
+		const struct endpoint *e = &eps[i];
+
+		for (j = 0; j < e->procs_n; j++) {
+			struct process_info *p = e->procs[j];
+
+			if (pidset_test_and_add(&seen, p->pid))
+				continue;
+			render_tree_process_details(prefix,
+				i + 1 == count && j + 1 == e->procs_n, p, e, width);
+		}
+	}
+	pidset_free(&seen);
+}
+
 /*
- * render_tree - print human-readable advanced report as a tree.
- * @m: model to render; endpoint array is sorted in place before printing.
- *
- * Returns no value.
- * Side effects/assumptions: Operates on in-memory data and may read
- * procfs/netns state; it does not change kernel configuration.
+ * endpoint_cmp keeps each plane/interface/protocol/bind/port contiguous.
+ * Walk those ranges directly; interface addresses remain separate in the
+ * model for JSON, but share one owner list per displayed tree port.
  */
 static void render_tree(struct model *m)
 {
-	size_t i;
-	int planes[PLANE_COUNT];
-	size_t plane_n = 0;
+	size_t i, plane_end;
 	int width = proc_output_width();
 
 	if (m->eps_n > 1)
 		qsort(m->eps, m->eps_n, sizeof(struct endpoint), endpoint_cmp);
-
-	for (i = 0; i < PLANE_COUNT; i++) {
-		size_t j;
-		for (j = 0; j < m->eps_n; j++) {
-			if (m->eps[j].plane == (enum plane_kind)i) {
-				planes[plane_n++] = i;
-				break;
-			}
-		}
-	}
-
-	for (i = 0; i < plane_n; i++) {
-		/* Tree level: plane (INET external/loopback, packet, Bluetooth, vsock). */
-		int plane = planes[i];
-		int plane_last = (i + 1 == plane_n);
-		char pfx_plane[256] = "";
-		char pfx_iface[256];
+	for (i = 0; i < m->eps_n; i = plane_end) {
+		enum plane_kind plane = m->eps[i].plane;
 		const char *plane_name = plane == PLANE_INET_EXTERNAL ?
 			"INET (external)" :
 			plane == PLANE_INET_LOOPBACK ? "INET (loopback)" :
 			plane == PLANE_PACKET ? PLANE_PACKET_NAME :
 			plane == PLANE_BLUETOOTH ? PLANE_BLUETOOTH_NAME : "VSOCK";
-		size_t j = 0;
+		char pfx_iface[256];
+		size_t j, iface_end;
 
-		proc_tree_print_node(pfx_plane, plane_last, plane_name, width);
-		proc_tree_build_child_prefix(pfx_iface, sizeof(pfx_iface), pfx_plane,
-			plane_last);
+		for (plane_end = i + 1; plane_end < m->eps_n &&
+		     m->eps[plane_end].plane == plane; plane_end++)
+			;
+		proc_tree_print_node("", plane_end == m->eps_n, plane_name, width);
+		proc_tree_build_child_prefix(pfx_iface, sizeof(pfx_iface), "",
+					    plane_end == m->eps_n);
 		if (plane == PLANE_VSOCK) {
-			/*
-			 * VSOCK endpoints are not projected onto interfaces, so render
-			 * them directly under the plane.
-			 */
-			for (j = 0; j < m->eps_n; j++) {
-				struct endpoint *e = &m->eps[j];
+			/* VSOCK has no interface/bind hierarchy. */
+			for (j = i; j < plane_end; j++) {
 				char pfx_proc[256];
-				int ep_last;
-				size_t k;
+				int last = j + 1 == plane_end;
 
-				if (e->plane != (enum plane_kind)plane)
-					continue;
-				ep_last = 1;
-				for (size_t n = j + 1; n < m->eps_n; n++) {
-					if (m->eps[n].plane == (enum plane_kind)plane) {
-						ep_last = 0;
-						break;
-					}
-				}
-				proc_tree_print_node(pfx_iface, ep_last, e->label, width);
-				proc_tree_build_child_prefix(pfx_proc, sizeof(pfx_proc), pfx_iface,
-					ep_last);
-				for (k = 0; k < e->procs_n; k++) {
-					struct process_info *p = e->procs[k];
-					int proc_last = (k + 1 == e->procs_n);
-
-					render_tree_process_details(pfx_proc, proc_last, p, e,
-						width);
-				}
+				proc_tree_print_node(pfx_iface, last, m->eps[j].label,
+						     width);
+				proc_tree_build_child_prefix(pfx_proc, sizeof(pfx_proc),
+							    pfx_iface, last);
+				render_tree_processes(pfx_proc, width, &m->eps[j], 1);
 			}
 			continue;
 		}
+		for (j = i; j < plane_end; j = iface_end) {
+			char pfx_proto[256];
+			size_t k, proto_end;
 
-		while (j < m->eps_n) {
-			/* Tree level: interface grouping within the current plane. */
-			size_t iface_start, iface_end;
-			char iface_line[160];
-			char pfx_iface_child[256];
-			int iface_last;
+			for (iface_end = j + 1; iface_end < plane_end &&
+			     !strcmp(m->eps[iface_end].ifname, m->eps[j].ifname);
+			     iface_end++)
+				;
+			proc_tree_print_node(pfx_iface, iface_end == plane_end,
+					     m->eps[j].ifname, width);
+			proc_tree_build_child_prefix(pfx_proto, sizeof(pfx_proto),
+						    pfx_iface, iface_end == plane_end);
+			for (k = j; k < iface_end; k = proto_end) {
+				const char *proto = m->eps[k].proto;
+				char pfx_bind[256], proto_line[64];
+				size_t b, bind_end;
+				const char *color = use_color &&
+					(!strcmp(proto, "raw") || !strcmp(proto, "raw6") ||
+					 !strcmp(proto, "packet") || !strcmp(proto, "hci")) ?
+					COLOR_YELLOW : "";
 
-			if (m->eps[j].plane != (enum plane_kind)plane) {
-				j++;
-				continue;
-			}
-			iface_start = j;
-			iface_end = j + 1;
-			while (iface_end < m->eps_n &&
-			       m->eps[iface_end].plane == (enum plane_kind)plane &&
-			       strcmp(m->eps[iface_end].ifname,
-				m->eps[iface_start].ifname) == 0)
-				iface_end++;
-			iface_last = 1;
-			if (iface_end < m->eps_n &&
-			    m->eps[iface_end].plane == (enum plane_kind)plane)
-				iface_last = 0;
+				for (proto_end = k + 1; proto_end < iface_end &&
+				     !strcmp(m->eps[proto_end].proto, proto); proto_end++)
+					;
+				snprintf(proto_line, sizeof(proto_line), "%s%s%s",
+					 color, proto, color[0] ? COLOR_RESET : "");
+				proc_tree_print_node(pfx_proto, proto_end == iface_end,
+						     proto_line, width);
+				proc_tree_build_child_prefix(pfx_bind, sizeof(pfx_bind),
+							    pfx_proto, proto_end == iface_end);
+				for (b = k; b < proto_end; b = bind_end) {
+					char pfx_port[256], bind_line[128];
+					size_t p, port_end;
 
-			snprintf(iface_line, sizeof(iface_line), "%s",
-				m->eps[iface_start].ifname);
-			proc_tree_print_node(pfx_iface, iface_last, iface_line, width);
-			proc_tree_build_child_prefix(pfx_iface_child, sizeof(pfx_iface_child),
-				pfx_iface, iface_last);
+					for (bind_end = b + 1; bind_end < proto_end &&
+					     !strcmp(m->eps[bind_end].bind, m->eps[b].bind);
+					     bind_end++)
+						;
+					format_bind_node(bind_line, sizeof(bind_line),
+							 m->eps[b].bind);
+					proc_tree_print_node(pfx_bind, bind_end == proto_end,
+							     bind_line, width);
+					proc_tree_build_child_prefix(pfx_port, sizeof(pfx_port),
+							pfx_bind, bind_end == proto_end);
+					for (p = b; p < bind_end; p = port_end) {
+						char pfx_proc[256], port_line[64];
 
-			{
-				char pfx_proto_root[256];
-
-				snprintf(pfx_proto_root, sizeof(pfx_proto_root), "%s",
-					pfx_iface_child);
-
-				for (j = iface_start; j < iface_end; ) {
-					/* Tree level: protocol grouping on this interface. */
-					size_t proto_start = j, proto_end;
-					char pfx_bind[256];
-					int proto_last;
-
-					proto_end = j + 1;
-					while (proto_end < iface_end &&
-					       strcmp(m->eps[proto_end].proto,
-						m->eps[proto_start].proto) == 0)
-						proto_end++;
-					proto_last = (proto_end == iface_end);
-
-					/* Highlight higher-risk raw/packet protocol families. */
-					if (use_color && (strcmp(m->eps[proto_start].proto, "raw") == 0 ||
-					    strcmp(m->eps[proto_start].proto, "raw6") == 0 ||
-					    strcmp(m->eps[proto_start].proto, "packet") == 0 ||
-					    strcmp(m->eps[proto_start].proto, "hci") == 0)) {
-						char pbuf[64];
-
-						snprintf(pbuf, sizeof(pbuf), "%s%s%s", COLOR_YELLOW,
-							m->eps[proto_start].proto, COLOR_RESET);
-						proc_tree_print_node(pfx_proto_root, proto_last, pbuf, width);
-					} else {
-						proc_tree_print_node(pfx_proto_root, proto_last,
-							m->eps[proto_start].proto, width);
+						for (port_end = p + 1; port_end < bind_end &&
+						     m->eps[port_end].port == m->eps[p].port;
+						     port_end++)
+							;
+						snprintf(port_line, sizeof(port_line), "%u",
+							 m->eps[p].port);
+						proc_tree_print_node(pfx_port, port_end == bind_end,
+								     port_line, width);
+						proc_tree_build_child_prefix(pfx_proc, sizeof(pfx_proc),
+							pfx_port, port_end == bind_end);
+						render_tree_processes(pfx_proc, width, &m->eps[p],
+								      port_end - p);
 					}
-					proc_tree_build_child_prefix(pfx_bind, sizeof(pfx_bind),
-						pfx_proto_root, proto_last);
-
-					{
-						size_t bi = proto_start;
-
-						while (bi < proto_end) {
-							/* Tree level: bind address (wildcard/specific). */
-							size_t bind_start = bi;
-							size_t bind_end;
-							char bind_line[128], pfx_port[256];
-							int bind_last;
-
-							bind_end = bi + 1;
-							while (bind_end < proto_end &&
-							       strcmp(m->eps[bind_end].bind,
-								m->eps[bind_start].bind) == 0)
-								bind_end++;
-							bind_last = (bind_end == proto_end);
-
-							format_bind_node(bind_line, sizeof(bind_line),
-								m->eps[bind_start].bind);
-							proc_tree_print_node(pfx_bind, bind_last, bind_line, width);
-							proc_tree_build_child_prefix(pfx_port, sizeof(pfx_port),
-								pfx_bind, bind_last);
-
-							for (bi = bind_start; bi < bind_end; ) {
-								/* Tree level: port number under each bind. */
-								size_t port_start = bi;
-								size_t port_end;
-								char pfx_proc[256], port_line[64];
-								int port_last;
-								size_t k;
-								struct pidset seen;
-
-								port_end = bi + 1;
-								while (port_end < bind_end &&
-								       m->eps[port_end].port ==
-									m->eps[port_start].port)
-									port_end++;
-								port_last = (port_end == bind_end);
-
-								snprintf(port_line, sizeof(port_line), "%u",
-									m->eps[port_start].port);
-								proc_tree_print_node(pfx_port, port_last,
-									port_line, width);
-								proc_tree_build_child_prefix(pfx_proc, sizeof(pfx_proc),
-									pfx_port, port_last);
-
-								if (pidset_init(&seen)) {
-									bi = port_end;
-									continue;
-								}
-
-								for (k = port_start; k < port_end; k++) {
-									/* Tree level: process details under the current port. */
-									struct endpoint *e = &m->eps[k];
-									size_t pi;
-
-									for (pi = 0; pi < e->procs_n; pi++) {
-										int seen_rc;
-										struct process_info *p = e->procs[pi];
-										int proc_last;
-
-										/*
-										 * Deduplicate processes that appear under multiple
-										 * endpoints sharing this grouped port.
-										 */
-										seen_rc = pidset_test_and_add(&seen, p->pid);
-										if (seen_rc)
-											continue;
-
-										proc_last = (k + 1 == port_end) &&
-											(pi + 1 == e->procs_n);
-
-										render_tree_process_details(pfx_proc,
-											proc_last, p, e, width);
-									}
-								}
-
-								pidset_free(&seen);
-								bi = port_end;
-							}
-						}
-					}
-					j = proto_end;
 				}
 			}
-			j = iface_end;
 		}
 	}
 }

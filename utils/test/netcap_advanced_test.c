@@ -8,6 +8,129 @@ static void fail(const char *message)
 	exit(EXIT_FAILURE);
 }
 
+static FILE *capture_output(int *saved)
+{
+	FILE *file = tmpfile();
+
+	*saved = dup(STDOUT_FILENO);
+	if (!file || *saved < 0 || fflush(stdout) ||
+	    dup2(fileno(file), STDOUT_FILENO) < 0)
+		fail("Cannot capture report");
+	return file;
+}
+
+static char *finish_output(FILE *file, int saved)
+{
+	long len;
+	char *text;
+
+	if (fflush(stdout) || dup2(saved, STDOUT_FILENO) < 0)
+		fail("Cannot restore stdout");
+	close(saved);
+	len = ftell(file);
+	if (len < 0 || !(text = calloc((size_t)len + 1, 1)))
+		fail("Cannot allocate captured report");
+	rewind(file);
+	if (fread(text, 1, (size_t)len, file) != (size_t)len)
+		fail("Cannot read captured report");
+	fclose(file);
+	return text;
+}
+
+static void test_process_rendering(void)
+{
+	struct process_info p = {
+		.pid = 1234, .comm = "owner", .caps = "(full)",
+		.has_privileged_caps = 1,
+		.defenses = { "no", "yes", "filter", "unconfined_t" },
+	};
+	struct endpoint e = { .wildcard_bind = 1, .reuseport = 1 };
+	const struct {
+		enum plane_kind plane;
+		unsigned int port, flags;
+		const char *json;
+	} cases[] = {
+		{ PLANE_INET_EXTERNAL, 80,
+		  FLAG_WILDCARD_BIND | FLAG_REUSEPORT | FLAG_PRIVILEGED_CAPS,
+		  "[\"wildcard-bind\", \"reuseport\", \"privileged-caps\"]" },
+		{ PLANE_BLUETOOTH, 0, FLAG_PROXIMITY_PLANE | FLAG_WILDCARD_BIND |
+		  FLAG_REUSEPORT | FLAG_PRIVILEGED_CAPS,
+		  "[\"proximity-plane\", \"wildcard-bind\", \"reuseport\", \"privileged-caps\"]" },
+		{ PLANE_VSOCK, 22, FLAG_HYPERVISOR_PLANE | FLAG_SSH_VSOCK_22 |
+		  FLAG_PRIVILEGED_CAPS,
+		  "[\"hypervisor-plane\", \"ssh-on-vsock-port-22\", \"privileged-caps\"]" },
+		{ PLANE_VSOCK, 80, FLAG_HYPERVISOR_PLANE | FLAG_PRIVILEGED_CAPS,
+		  "[\"hypervisor-plane\", \"privileged-caps\"]" },
+	};
+	size_t i;
+	int saved;
+	FILE *file;
+	char *text;
+
+	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		e.plane = cases[i].plane;
+		e.port = cases[i].port;
+		if (process_flags(&p, &e) != cases[i].flags)
+			fail("Process flag selection changed");
+		file = capture_output(&saved);
+		render_json_process(&p, &e, "");
+		text = finish_output(file, saved);
+		if (!strstr(text, cases[i].json) || strchr(text, '\033'))
+			fail("JSON flag names/order changed");
+		free(text);
+	}
+	use_color = 1;
+	file = capture_output(&saved);
+	render_tree_process_details("", 1, &p, &e, 80);
+	text = finish_output(file, saved);
+	if (!strstr(text, "runs_as_nonroot: " COLOR_YELLOW "no" COLOR_RESET) ||
+	    !strstr(text, "no_new_privs: " COLOR_GREEN "yes" COLOR_RESET) ||
+	    !strstr(text, "seccomp: " COLOR_GREEN "filter" COLOR_RESET) ||
+	    !strstr(text, "lsm: " COLOR_ORANGE "unconfined_t" COLOR_RESET))
+		fail("Defense colors changed");
+	free(text);
+	if (strcmp(defense_color("unknown"), "") ||
+	    strcmp(defense_color("strict"), COLOR_GREEN) ||
+	    strcmp(defense_color("disabled"), COLOR_YELLOW))
+		fail("Defense state classification changed");
+	use_color = 0;
+}
+
+static void test_tree_groups(void)
+{
+	struct model m = { 0 };
+	struct process_info p = {
+		.pid = 1234, .comm = "owner", .caps = "(none)",
+		.defenses = { "yes", "unknown", "disabled", NULL },
+	};
+	struct process_info *owners[] = { &p };
+	struct inode_proc ip = { .procs = owners, .n = 1 };
+	struct endpoint_attrs attrs = { 1, 0 };
+	FILE *file;
+	char *text, *first, *second;
+	int saved;
+
+	if (add_endpoint(&m, "tcp", "0.0.0.0", 80, PLANE_INET_EXTERNAL,
+			 "eth0", "192.0.2.1", &attrs, &ip) ||
+	    add_endpoint(&m, "tcp", "0.0.0.0", 80, PLANE_INET_EXTERNAL,
+			 "eth0", "192.0.2.2", &attrs, &ip) ||
+	    add_endpoint(&m, "udp6", "::1", 53, PLANE_INET_LOOPBACK,
+			 "lo", "::1", &attrs, &ip))
+		fail("Cannot build endpoint fixture");
+	file = capture_output(&saved);
+	render_tree(&m);
+	text = finish_output(file, saved);
+	first = strstr(text, "owner (pid=1234");
+	second = first ? strstr(first + 1, "owner (pid=1234") : NULL;
+	if (!first || !second || strstr(second + 1, "owner (pid=1234") ||
+	    !strstr(text, "├─ INET (external)") ||
+	    !strstr(text, "└─ INET (loopback)") ||
+	    !strstr(text, "└─ [::1]") || !strstr(text, "└─ *"))
+		fail("Tree grouping, bind formatting, or owner dedup changed");
+	free(text);
+	free_model(&m);
+}
+
 #ifdef HAVE_NETCAP_BLUETOOTH
 static void test_bluetooth_tables(void)
 {
@@ -61,6 +184,8 @@ static void test_bluetooth_tables(void)
 
 int main(void)
 {
+	test_process_rendering();
+	test_tree_groups();
 #ifdef HAVE_NETCAP_BLUETOOTH
 	test_bluetooth_tables();
 #endif
