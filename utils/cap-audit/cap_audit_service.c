@@ -585,7 +585,7 @@ static int parse_cap_tokens(cap_set_t *set, char *value, int invert)
 	return 0;
 }
 
-static int parse_cap_list(cap_set_t *set, const char *value, int bounding)
+static int parse_cap_list(cap_set_t *set, const char *value)
 {
 	char *copy;
 	char *tokens;
@@ -603,16 +603,15 @@ static int parse_cap_list(cap_set_t *set, const char *value, int bounding)
 		return 0;
 	}
 
-	if (bounding && tokens[0] == '~') {
+	/* Both directives use union, inverted subtraction, and full resets. */
+	if (tokens[0] == '~') {
 		invert = 1;
 		tokens = trim(tokens + 1);
-		if (!set->seen)
+		/* A bare ~ resets even an explicitly empty or restricted set. */
+		if (!set->seen || tokens[0] == '\0')
 			fill_cap_set(set);
-		else
-			set->seen = true;
-	} else {
-		set->seen = true;
 	}
+	set->seen = true;
 
 	rc = parse_cap_tokens(set, tokens, invert);
 	free(copy);
@@ -729,10 +728,10 @@ static int handle_service_directive(service_config_t *cfg,
 	if (!strcmp(key, "SupplementaryGroups"))
 		return parse_supplementary_groups(&cfg->sup_groups, value);
 	if (!strcmp(key, "AmbientCapabilities"))
-		return parse_cap_list(&cfg->ambient, value, 0);
+		return parse_cap_list(&cfg->ambient, value);
 	if (!strcmp(key, "CapabilityBoundingSet") ||
 	    !strcmp(key, "BoundingSet"))
-		return parse_cap_list(&cfg->bounding, value, 1);
+		return parse_cap_list(&cfg->bounding, value);
 	if (!strcmp(key, "NoNewPrivileges")) {
 		if (set_bool_directive(&cfg->no_new_privs,
 				       &cfg->no_new_privs_set, value) != 0) {

@@ -356,6 +356,62 @@ static void test_service_ambient(const char *dir)
 	seed_service_caps = 0;
 }
 
+/*
+ * test_capability_lists - exercise identical ambient and bounding list rules.
+ * @dir: temporary directory for unit fixtures.
+ *
+ * Returns no value; fails if union, subtraction, or a reset produces an
+ * unexpected set. All checks operate on parsed data without applying caps.
+ */
+static void test_capability_lists(const char *dir)
+{
+	static const char *keys[] = {
+		"CapabilityBoundingSet", "AmbientCapabilities",
+	};
+	static const struct {
+		const char *first, *second;
+		int chown, kill, other;
+	} cases[] = {
+		{ "CAP_CHOWN", "CAP_KILL", 1, 1, 0 },
+		{ "CAP_CHOWN CAP_KILL", "~CAP_CHOWN", 0, 1, 0 },
+		{ "CAP_CHOWN", "", 0, 0, 0 },
+		{ "CAP_CHOWN", "~", 1, 1, 1 },
+		{ "~CAP_CHOWN", "~CAP_KILL", 0, 0, 1 },
+		{ "", "~CAP_CHOWN", 0, 0, 0 },
+		{ "~", "", 0, 0, 0 },
+		{ "", "CAP_KILL", 0, 1, 0 },
+	};
+	size_t key, i;
+
+	for (key = 0; key < sizeof(keys) / sizeof(keys[0]); key++) {
+		for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+			service_config_t cfg;
+			const cap_set_t *set;
+			char *unit;
+			int cap;
+
+			if (asprintf(&unit, "[Service]\n%s=%s\n%s=%s\n",
+				     keys[key], cases[i].first,
+				     keys[key], cases[i].second) < 0)
+				fail("Failed to allocate capability unit");
+			if (parse_unit(dir, "caps.service", unit, &cfg) != 0)
+				fail("Capability list should parse");
+			free(unit);
+			set = key == 0 ? &cfg.bounding : &cfg.ambient;
+			if (!set->seen)
+				fail("Capability assignment was not recorded");
+			for (cap = 0; cap <= CAP_LAST_CAP; cap++) {
+				int expected = cap == CAP_CHOWN ? cases[i].chown :
+					cap == CAP_KILL ? cases[i].kill : cases[i].other;
+
+				if (set->caps[cap] != expected)
+					fail("Incorrect capability list merge or reset");
+			}
+			free_config(&cfg);
+		}
+	}
+}
+
 int main(void)
 {
 	char dir[] = "/tmp/libcap-ng-service-XXXXXX";
@@ -371,6 +427,7 @@ int main(void)
 	test_exec_start_privilege_prefixes(dir);
 	test_exec_start_environment_words(dir);
 	test_service_ambient(dir);
+	test_capability_lists(dir);
 
 	rmdir(dir);
 	puts("cap-audit service credential tests passed");
