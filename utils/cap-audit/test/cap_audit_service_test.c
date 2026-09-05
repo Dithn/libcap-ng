@@ -24,6 +24,28 @@ static int change_id_calls;
 static int changed_uid;
 static int changed_gid;
 static capng_flags_t changed_flags;
+static int seed_service_caps;
+
+int __real_capng_get_caps_process(void);
+
+/*
+ * __wrap_capng_get_caps_process - seed deterministic launch capabilities.
+ *
+ * Returns the real read result outside capability tests. In those tests,
+ * supplies CHOWN/KILL privileges and unrelated inherited/ambient KILL state
+ * without changing kernel credentials.
+ */
+int __wrap_capng_get_caps_process(void)
+{
+	if (!seed_service_caps)
+		return __real_capng_get_caps_process();
+	capng_clear(CAPNG_SELECT_ALL);
+	if (capng_update(CAPNG_ADD, CAPNG_EFFECTIVE | CAPNG_PERMITTED,
+			 CAP_CHOWN) != 0)
+		return -1;
+	return capng_update(CAPNG_ADD, CAPNG_EFFECTIVE | CAPNG_PERMITTED |
+			    CAPNG_INHERITABLE | CAPNG_AMBIENT, CAP_KILL);
+}
 
 static void fail(const char *msg)
 {
@@ -289,6 +311,51 @@ static void test_exec_start_environment_words(const char *dir)
 	free_config(&cfg);
 }
 
+/*
+ * test_service_ambient - apply ambient settings for root, non-root and !.
+ * @dir: temporary directory for unit fixtures.
+ *
+ * Returns no value; fails on a missing ambient grant, leaked ambient state,
+ * or an unintended effective/permitted change. Credential application is
+ * wrapped, so no real privileges are required or changed.
+ */
+static void test_service_ambient(const char *dir)
+{
+	static const char *units[] = {
+		"[Service]\nAmbientCapabilities=CAP_CHOWN\n"
+		"ExecStart=/usr/bin/true\n",
+		"[Service]\nUser=0\nAmbientCapabilities=CAP_CHOWN\n"
+		"ExecStart=/usr/bin/true\n",
+		"[Service]\nUser=1234\nAmbientCapabilities=CAP_CHOWN\n"
+		"ExecStart=/usr/bin/true\n",
+		"[Service]\nUser=1234\nAmbientCapabilities=CAP_CHOWN\n"
+		"ExecStart=!/usr/bin/true\n",
+	};
+	service_config_t cfg;
+	size_t i;
+
+	seed_service_caps = 1;
+	for (i = 0; i < sizeof(units) / sizeof(units[0]); i++) {
+		if (parse_unit(dir, "ambient.service", units[i], &cfg) != 0)
+			fail("Ambient service should parse");
+		change_id_calls = 0;
+		if (apply_service_config(&cfg) != 0 || change_id_calls != 1)
+			fail("Ambient service should apply");
+		if (capng_have_capability(CAPNG_AMBIENT, CAP_CHOWN) != 1 ||
+		    capng_have_capability(CAPNG_INHERITABLE, CAP_CHOWN) != 1 ||
+		    capng_have_capability(CAPNG_AMBIENT, CAP_KILL) != 0 ||
+		    (changed_flags & CAPNG_CLEAR_AMBIENT))
+			fail("Configured ambient capabilities were not staged exactly");
+		if (capng_have_capability(CAPNG_EFFECTIVE, CAP_CHOWN) != 1 ||
+		    capng_have_capability(CAPNG_PERMITTED, CAP_CHOWN) != 1 ||
+		    capng_have_capability(CAPNG_EFFECTIVE, CAP_KILL) != (i != 2) ||
+		    capng_have_capability(CAPNG_PERMITTED, CAP_KILL) != (i != 2))
+			fail("Ambient staging changed the wrong process capabilities");
+		free_config(&cfg);
+	}
+	seed_service_caps = 0;
+}
+
 int main(void)
 {
 	char dir[] = "/tmp/libcap-ng-service-XXXXXX";
@@ -303,6 +370,7 @@ int main(void)
 	test_sink_validation();
 	test_exec_start_privilege_prefixes(dir);
 	test_exec_start_environment_words(dir);
+	test_service_ambient(dir);
 
 	rmdir(dir);
 	puts("cap-audit service credential tests passed");

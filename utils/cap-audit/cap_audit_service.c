@@ -913,15 +913,15 @@ static int stage_service_caps(const service_config_t *cfg, int non_root)
 	capng_type_t type = CAPNG_INHERITABLE | CAPNG_AMBIENT;
 	int cap;
 
-	if (!non_root && !cfg->exec_start_no_setuid)
-		return 0;
-
+	/*
+	 * AmbientCapabilities applies to root services too. Replace inherited
+	 * ambient state, but retain effective/permitted caps for root and !;
+	 * only a non-root credential transition needs the reduced working set.
+	 */
+	capng_clear(CAPNG_SELECT_AMBIENT);
 	if (non_root) {
-		capng_clear(CAPNG_SELECT_CAPS | CAPNG_SELECT_AMBIENT);
+		capng_clear(CAPNG_SELECT_CAPS);
 		type |= CAPNG_EFFECTIVE | CAPNG_PERMITTED;
-	} else {
-		/* With ExecStart=!, systemd retains credentials and capabilities. */
-		capng_clear(CAPNG_SELECT_AMBIENT);
 	}
 	for (cap = 0; cap <= CAP_LAST_CAP; cap++) {
 		if (!cfg->ambient.caps[cap])
