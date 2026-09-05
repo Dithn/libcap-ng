@@ -48,16 +48,11 @@ enum cap_event_type {
 };
 
 struct cap_event {
-	__u64 timestamp_ns;
 	__u32 pid;
-	__u32 tid;
-	__u32 uid;
-	__u32 gid;
 	int capability;
 	int result;
 	int syscall_nr;
 	char comm[16];
-	__u64 stack_id;
 	__u32 targ_ns_inum;
 	__u32 cap_opts;
 	__s64 syscall_ret;

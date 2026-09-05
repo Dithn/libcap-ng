@@ -133,7 +133,6 @@ static void emit_check(int cap, int syscall_nr, int result)
 {
 	struct cap_event event = {
 		.pid = 1234,
-		.tid = 1234,
 		.capability = cap,
 		.result = result,
 		.syscall_nr = syscall_nr,
@@ -148,7 +147,6 @@ static void emit_outcome(int cap, int syscall_nr, __s64 result)
 {
 	struct cap_event event = {
 		.pid = 1234,
-		.tid = 1234,
 		.syscall_nr = syscall_nr,
 		.syscall_ret = result,
 		.denied_caps = 1ULL << cap,
@@ -164,7 +162,6 @@ static void emit_capset(__s64 result, __u64 effective, __u64 permitted,
 {
 	struct cap_event event = {
 		.pid = 1235,
-		.tid = 1235,
 		.syscall_ret = result,
 		.capset_effective = effective,
 		.capset_permitted = permitted,

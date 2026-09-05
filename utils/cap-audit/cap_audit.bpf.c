@@ -94,8 +94,7 @@ const volatile int capset_syscall_nr = -1;
  *
  * For traced tasks, the program builds cap_event records with task identity,
  * syscall context, namespace inode, the CAP_OPT_* flags passed to
- * cap_capable(), and stack id; tracks per-capability statistics; and
- * streams finalized events to userspace through a ring buffer. A syscall
+ * cap_capable(), and streams finalized events through a ring buffer. A syscall
  * completion event correlates denied checks from one invocation with its raw
  * kernel return value. Successful capset completion events also carry the
  * requested masks so userspace can distinguish a current-binary compatibility
@@ -107,10 +106,6 @@ const volatile int capset_syscall_nr = -1;
  * matching. Fork/exit tracepoints keep the PID filter in sync so children
  * are traced and exits are pruned.
  */
-
-#ifndef PERF_MAX_STACK_DEPTH
-#define PERF_MAX_STACK_DEPTH 127
-#endif
 
 #if !defined(__TARGET_ARCH_x86) && !defined(__TARGET_ARCH_arm64) && \
 	!defined(__TARGET_ARCH_arm) && !defined(__TARGET_ARCH_powerpc) && \
@@ -146,16 +141,11 @@ enum cap_event_type {
 };
 
 struct cap_event {
-	__u64 timestamp_ns;
 	__u32 pid;
-	__u32 tid;
-	__u32 uid;
-	__u32 gid;
 	int capability;
 	int result;
 	int syscall_nr;
 	char comm[TASK_COMM_LEN];
-	__u64 stack_id;
 	__u32 targ_ns_inum;
 	__u32 cap_opts;
 	__s64 syscall_ret;
@@ -164,12 +154,6 @@ struct cap_event {
 	__u64 capset_permitted;
 	__u64 capset_inheritable;
 	__u32 event_type;
-};
-
-struct cap_stats {
-	__u64 checks;
-	__u64 granted;
-	__u64 denied;
 };
 
 // This sets the limit for how many child processes can be traced.
@@ -193,69 +177,7 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } cap_events SEC(".maps");
 
-// This declares how many unique stack traces to hold. This is used
-// to determine which syscall a capability was requested from. If this
-// fills up, no more stack traces will be collected. This is about
-// 1K per entry. (Default uses 20 MB of memory)
-struct {
-	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
-	__uint(key_size, sizeof(__u32));
-	__uint(value_size, PERF_MAX_STACK_DEPTH * sizeof(__u64));
-	__uint(max_entries, 20000);
-} stack_traces SEC(".maps");
-
-// This declares how many capabilities can be watched. As of the 6.18
-// kernel, it only uses 40. So, 64 is future proof as none have been added
-// in a while.
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__type(key, __u32);
-	__type(value, struct cap_stats);
-	__uint(max_entries, 64);
-} capability_stats SEC(".maps");
-
-// The cap_events_inflight map uses pid_tgid as the key. There is a race
-// scenario when deep syscall chains that check multiple capabilities
-// or nested function calls where each checks a capability. In these cases
-// because it uses the same pid_tgid, it can overwrite a previous event.
-// example:
-//
-// In kernel, during mount():
-// sys_mount() {
-//  First check
-//  if (!capable(CAP_SYS_ADMIN))  // ← kprobe #1 fires
-//      return -EPERM;
-//
-//  Path resolution might trigger
-//  if (!capable(CAP_DAC_OVERRIDE))  // ← kprobe #2 fires BEFORE kretprobe #1!
-//      return -EACCES;
-//  ... more work ...
-//
-//    return 0;  // ← kretprobe #1 and #2 fire
-//}
-//
-// Statistics are SAFE: The capability_stats map is updated immediately in
-// the kprobe using atomic operations, so counts are always accurate. The
-// probability is higher for complex syscalls like mount, setuid, or network
-// operations.
-//
-// Possible solutions
-// Option 1: Per-CPU Map - change to BPF_MAP_TYPE_PERCPU_HASH. Drawback is
-// it uses a map for each CPU so if 64 cores, map is 64KB of memory.
-//
-// Option 2: Include Stack Pointer in Key -
-// key[0] = bpf_get_current_pid_tgid();
-// key[1] = PT_REGS_SP(ctx);  // Stack pointer makes it unique
-// bpf_map_update_elem(&cap_events_inflight, &key, ev, BPF_ANY);
-//
-// Option 3: Accept the Race (Current Approach)
-// Rationale:
-// * The capability_stats map is always correct (atomic updates)
-// * Individual event details might be wrong, but aggregate data is right
-// * For the tool's purpose (determining required capabilities), statistics
-//   are what matter
-// * Individual events are mainly for debugging/verbose mode
-
+/* Pair capability entry and return probes by thread. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
@@ -320,66 +242,6 @@ static __always_inline int should_record_pid(__u32 pid)
 }
 
 /*
- * record_stats - increment capability check count.
- * @cap: capability number.
- *
- * Increments the "checks" counter for the capability in capability_stats.
- * Out-of-range capability numbers are ignored. Returns nothing.
- */
-static __always_inline void record_stats(int cap)
-{
-	__u32 key;
-	struct cap_stats *stats;
-
-	if (cap < 0 || cap >= 64)
-		return;
-
-	key = (__u32)cap;
-	stats = bpf_map_lookup_elem(&capability_stats, &key);
-	if (stats)
-		__sync_fetch_and_add(&stats->checks, 1);
-	else {
-		struct cap_stats new_stats = { 0 };
-
-		new_stats.checks = 1;
-		if (!bpf_map_update_elem(&capability_stats, &key,
-					 &new_stats, BPF_NOEXIST))
-			return;
-
-		stats = bpf_map_lookup_elem(&capability_stats, &key);
-		if (stats)
-			__sync_fetch_and_add(&stats->checks, 1);
-	}
-}
-
-/*
- * update_result_stats - record whether a capability check succeeded.
- * @cap: capability number from the in-flight event.
- * @ret: return value from the capability helper (0 = granted).
- *
- * Updates the granted/denied counters for the capability when a matching
- * entry already exists. Out-of-range capability numbers are ignored.
- */
-static __always_inline void update_result_stats(int cap, int ret)
-{
-	__u32 key;
-	struct cap_stats *stats;
-
-	if (cap < 0 || cap >= 64)
-		return;
-
-	key = (__u32)cap;
-	stats = bpf_map_lookup_elem(&capability_stats, &key);
-	if (!stats)
-		return;
-
-	if (!ret)
-		__sync_fetch_and_add(&stats->granted, 1);
-	else
-		__sync_fetch_and_add(&stats->denied, 1);
-}
-
-/*
  * read_syscall - fetch the syscall number for the current task.
  * @ctx: pt_regs provided by the kprobe.
  *
@@ -416,29 +278,20 @@ static __always_inline int read_syscall(struct pt_regs *ctx)
  * @ctx: pt_regs from the capability hook.
  * @cap: capability number being checked.
  *
- * Captures PID/TID, timestamp, UID/GID, command name, syscall number, and
- * user stack id for the current task.
+ * Captures PID, command name, and syscall number for the current task.
  */
 static __always_inline void fill_event_common(struct cap_event *ev,
 					      struct pt_regs *ctx, int cap)
 {
 	__u64 pid_tgid;
-	__u64 uid_gid;
 
 	pid_tgid = bpf_get_current_pid_tgid();
 	ev->pid = pid_tgid >> 32;
-	ev->tid = (__u32)pid_tgid;
 	ev->capability = cap;
-	ev->timestamp_ns = bpf_ktime_get_ns();
 
-	uid_gid = bpf_get_current_uid_gid();
-	ev->uid = uid_gid >> 32;
-	ev->gid = (__u32)uid_gid;
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
 
 	ev->syscall_nr = read_syscall(ctx);
-	ev->stack_id = bpf_get_stackid(ctx, &stack_traces,
-				       BPF_F_USER_STACK);
 }
 
 /*
@@ -515,9 +368,9 @@ cleanup:
  * @cap: capability number under evaluation.
  * @targ_ns: optional target namespace pointer (may be NULL).
  *
- * Filters by PID first; for traced tasks it records a stats increment,
- * populates a cap_event with contextual information, and stashes it so the
- * return probe can attach the result. Returns 0 to indicate the kprobe should
+ * Filters by PID first; for traced tasks it populates a cap_event with
+ * contextual information and stashes it so the return probe can attach the
+ * result. Returns 0 to indicate the kprobe should
  * allow normal execution to continue.
  */
 static __always_inline int handle_capable(struct pt_regs *ctx, int cap,
@@ -531,9 +384,7 @@ static __always_inline int handle_capable(struct pt_regs *ctx, int cap,
 	if (!should_record_pid(pid))
 		return 0;
 
-	/* Track how many times this capability was inspected. */
-	record_stats(cap);
-	/* Collect task identity, syscall, and stack trace information. */
+	/* Collect task identity and syscall information. */
 	fill_event_common(&ev, ctx, cap);
 	ev.cap_opts = (__u32)cap_opts;
 
@@ -567,20 +418,11 @@ int BPF_KPROBE(trace_cap_capable, const struct cred *cred,
  * trace_cap_capable_ret - return probe for cap_capable().
  * @ret: kernel return value (0 = granted).
  *
- * Updates result statistics for the capability tied to this pid_tgid and
- * emits the finalized event to userspace. Always returns 0.
+ * Emits the finalized event to userspace. Always returns 0.
  */
 SEC("kretprobe/cap_capable")
 int BPF_KRETPROBE(trace_cap_capable_ret, int ret)
 {
-	__u64 pid_tgid;
-	struct cap_event *stored;
-
-	pid_tgid = bpf_get_current_pid_tgid();
-	stored = bpf_map_lookup_elem(&cap_events_inflight, &pid_tgid);
-	if (stored)
-		update_result_stats(stored->capability, ret);
-
 	return submit_event(ret);
 }
 
@@ -738,9 +580,7 @@ static __always_inline void emit_syscall_result(
 
 	__builtin_memset(out, 0, sizeof(*out));
 	pid_tgid = bpf_get_current_pid_tgid();
-	out->timestamp_ns = bpf_ktime_get_ns();
 	out->pid = pid_tgid >> 32;
-	out->tid = (__u32)pid_tgid;
 	out->syscall_nr = syscall->nr;
 	out->syscall_ret = ret;
 	out->denied_caps = syscall->denied_caps;
@@ -764,9 +604,7 @@ static __always_inline void emit_capset_result(
 
 	__builtin_memset(out, 0, sizeof(*out));
 	pid_tgid = bpf_get_current_pid_tgid();
-	out->timestamp_ns = bpf_ktime_get_ns();
 	out->pid = pid_tgid >> 32;
-	out->tid = (__u32)pid_tgid;
 	out->syscall_nr = syscall->nr;
 	out->syscall_ret = ret;
 	out->capset_effective = syscall->capset_effective;

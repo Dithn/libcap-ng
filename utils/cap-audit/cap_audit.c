@@ -223,10 +223,6 @@ static int check_auditor_caps(void)
 		return -1;
 	}
 
-	if (!capng_have_capability(CAPNG_EFFECTIVE, CAP_SYS_PTRACE))
-		fprintf(stderr, "Warning: CAP_SYS_PTRACE not available, stack "
-			"traces may be limited\n");
-
 	return 0;
 }
 
