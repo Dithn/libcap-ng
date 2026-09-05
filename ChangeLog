@@ -1,4 +1,12 @@
 0.9.6
+- Fix supplementary group changes in capng_change_id
+- Reduce cap-audit size and memory use; builds now require llvm-strip
+- Preserve capability evidence during cap-audit shutdown
+- Fix optional SETPCAP false positives without hiding required capabilities
+- Fix ambient capabilities and capability list handling in cap-audit --service
+- Reject unsupported systemd unit syntax instead of silently misinterpreting it
+- Fix tree branch drawing for repeated socket owners in netcap --advanced
+- Fix utility builds with musl libc
 
 0.9.5
 - Fix broken utility_logic_test when run as a 32 bit app
