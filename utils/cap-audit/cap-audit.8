@@ -134,6 +134,12 @@ The
 prefix is also rejected because the command model does not support a separate
 executable path and overridden first argument.
 .PP
+Only one
+.B ExecStart=
+command is supported. Multiple commands, including oneshot sequences, are
+rejected. An empty assignment resets the command and permits a subsequent
+replacement.
+.PP
 If a capability check targets a user namespace different from the namespace
 in which cap-audit started, the observation is retained in the diagnostic
 output but automatic capability recommendations are suppressed. The safe

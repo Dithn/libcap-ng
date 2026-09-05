@@ -416,6 +416,35 @@ static void test_capability_lists(const char *dir)
 	}
 }
 
+/*
+ * test_exec_start_reset - reject command sequences but allow explicit resets.
+ * @dir: temporary directory for unit fixtures.
+ *
+ * Returns no value; fails if a command is silently discarded or a reset
+ * retains an earlier command's arguments or credential override.
+ */
+static void test_exec_start_reset(const char *dir)
+{
+	service_config_t cfg;
+	const char unit[] =
+		"[Service]\nExecStart=!/usr/bin/false discarded\n"
+		"ExecStart=\nExecStart=/usr/bin/true kept\n";
+
+	expect_parse_failure(dir, "oneshot-sequence.service",
+		"[Service]\nType=oneshot\nExecStart=/usr/bin/echo first\n"
+		"ExecStart=/usr/bin/echo second\n");
+	expect_parse_failure(dir, "simple-sequence.service",
+		"[Service]\nExecStart=/usr/bin/echo first\n"
+		"ExecStart=/usr/bin/echo second\n");
+	if (parse_unit(dir, "reset.service", unit, &cfg) != 0)
+		fail("An explicit ExecStart reset should parse");
+	if (cfg.exec_argc != 2 || cfg.exec_start_no_setuid ||
+	    strcmp(cfg.exec_argv[0], "/usr/bin/true") ||
+	    strcmp(cfg.exec_argv[1], "kept"))
+		fail("ExecStart reset retained earlier command state");
+	free_config(&cfg);
+}
+
 int main(void)
 {
 	char dir[] = "/tmp/libcap-ng-service-XXXXXX";
@@ -432,6 +461,7 @@ int main(void)
 	test_exec_start_environment_words(dir);
 	test_service_ambient(dir);
 	test_capability_lists(dir);
+	test_exec_start_reset(dir);
 
 	rmdir(dir);
 	puts("cap-audit service credential tests passed");

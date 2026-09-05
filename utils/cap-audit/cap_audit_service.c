@@ -545,6 +545,14 @@ static int set_exec_start(service_config_t *cfg, const char *value)
 	size_t argc = 0;
 	int no_env_expand = 0;
 
+	/*
+	 * Multiple oneshot commands are a sequence, not replacements. We can
+	 * trace only one command; an empty assignment may explicitly reset it.
+	 */
+	if (value[0] && cfg->exec_argc) {
+		fprintf(stderr, "Error: multiple ExecStart commands are unsupported\n");
+		return -1;
+	}
 	free_exec_argv(cfg);
 	cfg->exec_start_no_setuid = false;
 	if (replace_string(&cfg->exec_start, value) != 0)
