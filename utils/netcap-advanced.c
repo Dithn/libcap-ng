@@ -2942,6 +2942,8 @@ static void render_tree_processes(const char *prefix, int width,
 				 const struct endpoint *eps, size_t count)
 {
 	struct pidset seen;
+	struct process_info *pending = NULL;
+	const struct endpoint *pending_ep = NULL;
 	size_t i, j;
 
 	if (pidset_init(&seen))
@@ -2954,10 +2956,20 @@ static void render_tree_processes(const char *prefix, int width,
 
 			if (pidset_test_and_add(&seen, p->pid))
 				continue;
-			render_tree_process_details(prefix,
-				i + 1 == count && j + 1 == e->procs_n, p, e, width);
+			/*
+			 * A later endpoint may contain only duplicate owners.
+			 * Defer one row so "last" means last visible process,
+			 * not last entry in the underlying endpoint arrays.
+			 */
+			if (pending)
+				render_tree_process_details(prefix, 0, pending,
+							    pending_ep, width);
+			pending = p;
+			pending_ep = e;
 		}
 	}
+	if (pending)
+		render_tree_process_details(prefix, 1, pending, pending_ep, width);
 	pidset_free(&seen);
 }
 

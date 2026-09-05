@@ -103,7 +103,8 @@ static void test_tree_groups(void)
 		.pid = 1234, .comm = "owner", .caps = "(none)",
 		.defenses = { "yes", "unknown", "disabled", NULL },
 	};
-	struct process_info *owners[] = { &p };
+	struct process_info q = p;
+	struct process_info *owners[] = { &p, &q };
 	struct inode_proc ip = { .procs = owners, .n = 1 };
 	struct endpoint_attrs attrs = { 1, 0 };
 	FILE *file;
@@ -123,10 +124,26 @@ static void test_tree_groups(void)
 	first = strstr(text, "owner (pid=1234");
 	second = first ? strstr(first + 1, "owner (pid=1234") : NULL;
 	if (!first || !second || strstr(second + 1, "owner (pid=1234") ||
+	    strstr(text, "├─ owner") ||
 	    !strstr(text, "├─ INET (external)") ||
 	    !strstr(text, "└─ INET (loopback)") ||
 	    !strstr(text, "└─ [::1]") || !strstr(text, "└─ *"))
 		fail("Tree grouping, bind formatting, or owner dedup changed");
+	free(text);
+
+	/* The physical last endpoint repeats p, but q is the last unique row. */
+	q.pid = 5678;
+	q.comm = "other";
+	ip.n = 2;
+	if (add_endpoint(&m, "tcp", "0.0.0.0", 80, PLANE_INET_EXTERNAL,
+			 "eth0", "192.0.2.1", &attrs, &ip))
+		fail("Cannot add second owner");
+	file = capture_output(&saved);
+	render_tree(&m);
+	text = finish_output(file, saved);
+	if (!strstr(text, "├─ owner") || !strstr(text, "└─ other") ||
+	    strstr(text, "├─ other"))
+		fail("Last unique owner must close the process branch");
 	free(text);
 	free_model(&m);
 }
