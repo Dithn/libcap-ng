@@ -61,15 +61,24 @@ endif
 BPF_ARCH = @BPF_ARCH@
 BPFTOOL = @BPFTOOL@
 CLANG = @CLANG@
+LLVM_STRIP = @LLVM_STRIP@
 VMLINUX_H_PATH = @VMLINUX_H_PATH@
 
+# Keep -g to generate the BTF and CO-RE metadata needed at load time.
 BPF_CFLAGS = -g -O2 -target bpf -D__TARGET_ARCH_${BPF_ARCH} ${AM_CPPFLAGS}
+
+# Do not reuse a partial BPF object or skeleton after a failed build step.
+.DELETE_ON_ERROR:
 
 cap_audit.skel.h: cap_audit.bpf.o
 	$(AM_V_GEN)$(BPFTOOL) gen skeleton $< > $@
 
+# The skeleton embeds the whole object, including vmlinux.h's large DWARF
+# type descriptions. Strip only debug information before embedding it;
+# --strip-debug preserves BTF, CO-RE relocations, and loader symbols.
 cap_audit.bpf.o: cap_audit.bpf.c vmlinux.h
 	$(AM_V_CC)$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+	$(AM_V_GEN)$(LLVM_STRIP) --strip-debug $@
 
 if PROVIDED_VMLINUX_H
 # Reproducible builds: use the vmlinux.h supplied at configure time via

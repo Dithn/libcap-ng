@@ -256,8 +256,13 @@ cap-audit is optional and has to be enabled at build time:
 ./configure --enable-cap-audit
 ```
 
-The build needs clang, bpftool, libbpf, libaudit, and their development
-headers. It also needs a `utils/cap-audit/vmlinux.h` describing the kernel's
+The build needs clang, llvm-strip, bpftool, libbpf, libaudit, and their
+development headers. Set `LLVM_STRIP=/path/to/llvm-strip` when configuring
+to select a versioned or non-default tool. The build strips DWARF debug
+information from the BPF object before embedding it, while preserving the
+BTF and CO-RE metadata needed to load it.
+
+It also needs a `utils/cap-audit/vmlinux.h` describing the kernel's
 types. By default this is generated from the running kernel's BTF data in
 `/sys/kernel/btf/vmlinux`, so the build host kernel must provide enough BTF and
 tracing metadata for the BPF program to compile.

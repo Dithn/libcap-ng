@@ -12,7 +12,7 @@ BuildRequires: kernel-headers >= 2.6.11
 BuildRequires: libattr-devel
 %ifarch %{bpf_supported_arches}
 # These next ones are only if --enable-cap-audit is configured
-BuildRequires: clang
+BuildRequires: clang llvm
 BuildRequires: bpftool libbpf-devel
 BuildRequires: audit-libs-devel
 BuildRequires: kernel-devel

@@ -65,6 +65,7 @@ LIBAUDIT_LIBS=""
 CLANG=""
 BPFTOOL=""
 BPF_ARCH=""
+AC_ARG_VAR([LLVM_STRIP], [llvm-strip command for cap-audit BPF objects])
 
 AC_CANONICAL_HOST
 AC_ARG_WITH([bpf-arch],
@@ -98,16 +99,17 @@ if test "x$enable_cap_audit" = "xyes"; then
 missing_cap_audit_deps=no
 AC_CHECK_PROG([CLANG],[clang],[clang],[no])
 AC_CHECK_PROG([BPFTOOL],[bpftool],[bpftool],[no])
+AC_CHECK_PROG([LLVM_STRIP],[llvm-strip],[llvm-strip],[no])
 PKG_CHECK_MODULES([LIBBPF],[libbpf],
 [have_libbpf=yes],[have_libbpf=no])
 PKG_CHECK_MODULES([LIBAUDIT],[audit],
 [have_libaudit=yes],[have_libaudit=no])
 AC_CHECK_HEADERS([bpf/libbpf.h bpf/bpf.h linux/bpf.h libaudit.h], [],
 [missing_cap_audit_deps=yes])
-if test "$CLANG" = "no" -o "$BPFTOOL" = "no" -o \
+if test "$CLANG" = "no" -o "$BPFTOOL" = "no" -o "$LLVM_STRIP" = "no" -o \
 "x$have_libbpf" != "xyes" -o "x$have_libaudit" != "xyes" -o \
 "x$missing_cap_audit_deps" = "xyes"; then
-AC_MSG_ERROR([cap-audit requires clang, bpftool, libbpf, and libaudit])
+AC_MSG_ERROR([cap-audit requires clang, llvm-strip, bpftool, libbpf, and libaudit])
 fi
 
 AC_MSG_CHECKING([how to obtain vmlinux.h])
