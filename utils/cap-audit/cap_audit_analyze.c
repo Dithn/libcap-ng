@@ -88,7 +88,6 @@ static void print_wrapped_text(const char *indent, const char *text)
 	int content_width;
 	const char *p;
 	int line_len = 0;
-	int first_line = 1;
 
 	if (!text) {
 		printf("%s\n", indent);
@@ -122,9 +121,8 @@ static void print_wrapped_text(const char *indent, const char *text)
 
 		if (*p == '\n') {
 			putchar('\n');
-			printf("%s", first_line ? cont_indent : cont_indent);
+			printf("%s", cont_indent);
 			line_len = 0;
-			first_line = 0;
 			p++;
 			continue;
 		}
@@ -138,7 +136,6 @@ static void print_wrapped_text(const char *indent, const char *text)
 			printf("%s", cont_indent);
 			line_len = 0;
 			need_space = 0;
-			first_line = 0;
 		}
 		if (need_space) {
 			putchar(' ');
