@@ -117,7 +117,6 @@ enum plane_kind {
 #define PLANE_BLUETOOTH_NAME	"BLUETOOTH"
 /* Keep user-facing key name centralized to avoid legacy regressions. */
 #define DEFENSES_RUNS_AS_KEY	"runs_as_nonroot"
-#define BT_ADAPTER_UNKNOWN	"unknown"
 #define BT_ADAPTER_HEURISTIC	"hci?"
 #define BT_ADDR_UNKNOWN		"*"
 
@@ -230,7 +229,6 @@ struct endpoint_attrs {
 
 struct bt_adapter_info {
 	char name[IF_NAMESIZE];
-	int dev_id;
 	char addr[18];
 };
 
@@ -2118,7 +2116,6 @@ static void bt_load_adapters(void)
 			goto fail;
 		snprintf(tmp[tmp_n].name, sizeof(tmp[tmp_n].name), "%s",
 			ent->d_name);
-		tmp[tmp_n].dev_id = dev_id;
 		bt_format_addr(&di.bdaddr, tmp[tmp_n].addr,
 			sizeof(tmp[tmp_n].addr));
 		tmp_n++;
@@ -2138,55 +2135,6 @@ fail:
 	closedir(d);
 }
 
-/*
- * resolve_bt_adapter_name - map one HCI device index to an adapter name.
- * @dev_id: HCI device index.
- * @name: destination buffer for adapter name or "unknown".
- * @name_sz: size of @name in bytes.
- *
- * Returns 0 on match, -1 when the cache has no matching adapter.
- * Side effects/assumptions: Reads sysfs adapter cache but does not change
- * system state.
- */
-static int resolve_bt_adapter_name(int dev_id, char *name, size_t name_sz)
-{
-	size_t i;
-
-	bt_load_adapters();
-	for (i = 0; i < bt_adapters_n; i++) {
-		if (bt_adapters[i].dev_id != dev_id)
-			continue;
-		snprintf(name, name_sz, "%s", bt_adapters[i].name);
-		return 0;
-	}
-	snprintf(name, name_sz, "%s", BT_ADAPTER_UNKNOWN);
-	return -1;
-}
-
-/*
- * resolve_bt_adapter_addr - copy the cached controller address for @name.
- * @name: adapter name such as hci0.
- * @addr: destination buffer.
- * @addr_sz: size of @addr in bytes.
- *
- * Returns 0 on success, -1 when @name is unknown in the cache.
- * Side effects/assumptions: Reads sysfs adapter cache but does not change
- * system state.
- */
-static int resolve_bt_adapter_addr(const char *name, char *addr, size_t addr_sz)
-{
-	size_t i;
-
-	bt_load_adapters();
-	for (i = 0; i < bt_adapters_n; i++) {
-		if (strcmp(bt_adapters[i].name, name) != 0)
-			continue;
-		snprintf(addr, addr_sz, "%s", bt_adapters[i].addr);
-		return 0;
-	}
-	snprintf(addr, addr_sz, "%s", BT_ADAPTER_UNKNOWN);
-	return -1;
-}
 
 /*
  * bt_resolve_single_adapter - pick the only adapter when the cache is unique.
@@ -2206,171 +2154,51 @@ static void bt_resolve_single_adapter(char *name, size_t name_sz,
 	char *addr, size_t addr_sz)
 {
 	bt_load_adapters();
-	if (bt_adapters_n == 1 &&
-	    resolve_bt_adapter_name(bt_adapters[0].dev_id, name, name_sz) == 0 &&
-	    resolve_bt_adapter_addr(name, addr, addr_sz) == 0)
+	if (bt_adapters_n == 1) {
+		snprintf(name, name_sz, "%s", bt_adapters[0].name);
+		snprintf(addr, addr_sz, "%s", bt_adapters[0].addr);
 		return;
+	}
 
 	snprintf(name, name_sz, "%s", BT_ADAPTER_HEURISTIC);
 	snprintf(addr, addr_sz, "%s", BT_ADDR_UNKNOWN);
 }
 
 /*
- * bt_add_endpoint - project one Bluetooth listener into the common endpoint model.
- * @m: model receiving Bluetooth endpoint/process mappings.
- * @proto: Bluetooth protocol label (rfcomm/hci).
- * @port: 0 because current Bluetooth procfs data does not expose channels.
- * @ifname: adapter name such as hci0 or hci?.
- * @ifaddr: adapter BD_ADDR or "*" when it cannot be resolved.
- * @ip: inode-owner mapping whose process pointers are attached to endpoint.
- *
- * Returns no value.
- * Side effects/assumptions: Operates on in-memory data and may read
- * procfs/netns state; it does not change kernel configuration.
+ * HCI and RFCOMM expose the same generic socket columns:
+ * sk RefCnt Rmem Wmem User Inode Parent. Neither supplies adapter identity,
+ * channel, or listener state. Keep reporting owned sockets at port 0 and
+ * use the existing single-adapter heuristic; do not guess from socket data.
  */
-static void bt_add_endpoint(struct model *m, const char *proto,
-	unsigned int port, const char *ifname, const char *ifaddr,
-	struct inode_proc *ip)
+static void parse_bluetooth_file(struct model *m, const char *path,
+				 const char *proto)
 {
+	FILE *f;
+	char line[512];
 	struct endpoint_attrs attrs = { 0, 0 };
-	add_endpoint(m, proto, ifaddr, port, PLANE_BLUETOOTH, ifname, ifaddr,
-		&attrs, ip);
-}
 
-/*
- * parse_bluetooth_rfcomm - parse /proc/net/rfcomm into Bluetooth endpoints.
- * @m: model receiving Bluetooth RFCOMM listener mappings.
- *
- * The current kernel RFCOMM table exports only generic socket fields:
- * sk, RefCnt, Rmem, Wmem, User, Inode, Parent. Adapter, channel, and state
- * are not exposed, so any owned RFCOMM socket is reported with port 0.
- * Returns no value.
- * Side effects/assumptions: Operates on in-memory data and may read
- * procfs/netns state; it does not change kernel configuration.
- */
-static void parse_bluetooth_rfcomm(struct model *m)
-{
-	FILE *f;
-	char line[512];
-
-	f = fopen("/proc/net/rfcomm", "rte");
+	f = fopen(path, "rte");
 	if (!f)
 		return;
 	__fsetlocking(f, FSETLOCKING_BYCALLER);
-
 	while (fgets(line, sizeof(line), f)) {
 		unsigned long sk, inode, parent;
 		unsigned int refcnt, rmem, wmem, uid;
-		char ifname[IF_NAMESIZE];
-		char ifaddr[32];
+		char ifname[IF_NAMESIZE], ifaddr[32];
 		struct inode_proc *ip;
 
-		if (strncmp(line, "sk", 2) == 0)
-			continue;
-		/*
-		 * /proc/net/rfcomm columns are:
-		 * sk RefCnt Rmem Wmem User Inode Parent
-		 */
 		if (sscanf(line, "%lx %u %u %u %u %lu %lu",
 			   &sk, &refcnt, &rmem, &wmem, &uid, &inode, &parent) != 7)
 			continue;
-		(void)sk;
-		(void)refcnt;
-		(void)rmem;
-		(void)wmem;
-		(void)uid;
-		(void)parent;
 		ip = lookup_inode(m, inode);
 		if (!ip)
 			continue;
-
-		/*
-		 * /proc/net/rfcomm does not expose channel or state, so report all
-		 * owned RFCOMM sockets with port 0 on the best available adapter.
-		 */
 		bt_resolve_single_adapter(ifname, sizeof(ifname),
-			ifaddr, sizeof(ifaddr));
-		bt_add_endpoint(m, "rfcomm", 0, ifname, ifaddr, ip);
+					 ifaddr, sizeof(ifaddr));
+		add_endpoint(m, proto, ifaddr, 0, PLANE_BLUETOOTH, ifname,
+			     ifaddr, &attrs, ip);
 	}
-
 	fclose(f);
-}
-
-/*
- * parse_bluetooth_hci - parse /proc/net/hci into raw HCI management endpoints.
- * @m: model receiving Bluetooth HCI socket mappings.
- *
- * The current kernel HCI table exports only generic socket fields:
- * sk, RefCnt, Rmem, Wmem, User, Inode, Parent. Adapter identity is not
- * exposed, so the parser falls back to the single-adapter heuristic.
- * Returns no value.
- * Side effects/assumptions: Operates on in-memory data and may read
- * procfs/netns state; it does not change kernel configuration.
- */
-static void parse_bluetooth_hci(struct model *m)
-{
-	FILE *f;
-	char line[512];
-
-	f = fopen("/proc/net/hci", "rte");
-	if (!f)
-		return;
-	__fsetlocking(f, FSETLOCKING_BYCALLER);
-
-	while (fgets(line, sizeof(line), f)) {
-		unsigned long sk, inode, parent;
-		unsigned int refcnt, rmem, wmem, uid;
-		char ifname[IF_NAMESIZE];
-		char ifaddr[32];
-		struct inode_proc *ip;
-
-		if (strncmp(line, "sk", 2) == 0)
-			continue;
-		/*
-		 * /proc/net/hci columns are:
-		 * sk RefCnt Rmem Wmem User Inode Parent
-		 */
-		if (sscanf(line, "%lx %u %u %u %u %lu %lu",
-			   &sk, &refcnt, &rmem, &wmem, &uid, &inode, &parent) != 7)
-			continue;
-		(void)sk;
-		(void)refcnt;
-		(void)rmem;
-		(void)wmem;
-		(void)uid;
-		(void)parent;
-		ip = lookup_inode(m, inode);
-		if (!ip)
-			continue;
-
-		bt_resolve_single_adapter(ifname, sizeof(ifname),
-			ifaddr, sizeof(ifaddr));
-		bt_add_endpoint(m, "hci", 0, ifname, ifaddr, ip);
-	}
-
-	fclose(f);
-}
-#else
-/*
- * parse_bluetooth_rfcomm - Bluetooth support stub when headers are unavailable.
- * @m: unused model pointer.
- *
- * Returns no value.
- */
-static void parse_bluetooth_rfcomm(struct model *m)
-{
-	(void)m;
-}
-
-/*
- * parse_bluetooth_hci - Bluetooth support stub when headers are unavailable.
- * @m: unused model pointer.
- *
- * Returns no value.
- */
-static void parse_bluetooth_hci(struct model *m)
-{
-	(void)m;
 }
 #endif
 
@@ -2803,8 +2631,10 @@ static void collect_endpoints(struct model *m)
 		parse_vsock_file(m);
 	}
 #endif
-	parse_bluetooth_rfcomm(m);
-	parse_bluetooth_hci(m);
+#ifdef HAVE_NETCAP_BLUETOOTH
+	parse_bluetooth_file(m, "/proc/net/rfcomm", "rfcomm");
+	parse_bluetooth_file(m, "/proc/net/hci", "hci");
+#endif
 }
 
 /*
