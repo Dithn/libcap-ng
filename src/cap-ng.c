@@ -1191,7 +1191,13 @@ if (HAVE_PR_CAPBSET_DROP) {
 	}
 }
 #endif
-	if (gid != -1) {
+	/*
+	 * Supplementary groups need SETGID even when the primary gid stays
+	 * unchanged. Keep it through the intermediate capset, then remove only
+	 * the bits added here so caller-requested permitted bits survive.
+	 */
+	if (gid != -1 || (flag & CAPNG_APPLY_STAGED_GROUPS) ||
+	    ((flag & CAPNG_INIT_SUPP_GRP) && uid != -1)) {
 		if (capng_have_capability(CAPNG_EFFECTIVE, CAP_SETGID) == 0) {
 			tmp_caps |= TMP_SETGID_E;
 			capng_update(CAPNG_ADD, CAPNG_EFFECTIVE, CAP_SETGID);

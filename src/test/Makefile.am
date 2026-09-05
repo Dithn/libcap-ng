@@ -23,12 +23,13 @@
 
 AM_CPPFLAGS = -I${top_srcdir} -I${top_srcdir}/src
 check_PROGRAMS = lib_test thread_test change_id_test file_caps_test \
-	securebits_test
+	securebits_test change_id_transition_test
 TESTS = $(check_PROGRAMS)
 
 lib_test_LDADD = ${top_builddir}/src/libcap-ng.la
 thread_test_LDADD = ${top_builddir}/src/libcap-ng.la -lpthread
 change_id_test_LDADD = ${top_builddir}/src/libcap-ng.la
+change_id_transition_test_LDADD = ${top_builddir}/src/libcap-ng.la
 file_caps_test_LDADD = ${top_builddir}/src/libcap-ng.la
 securebits_test_LDADD = ${top_builddir}/src/libcap-ng.la
 
