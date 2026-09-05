@@ -4,7 +4,12 @@
 #ifndef GCC_ATTRIBUTES_H
 #define GCC_ATTRIBUTES_H
 
-#include <sys/cdefs.h>
+// Indirectly load libc attribute definitions through a portable public
+// header. Use the fallbacks below when the libc does not provide them.
+// The macros provide extra hints for gcc-analyzer and some compiler
+// optimizations. You're not missing any runtime security protections if
+// libc does not provide the macros.
+#include <string.h>
 
 /* These macros originate in sys/cdefs.h. Stub them when unavailable. */
 #ifndef __returns_nonnull
