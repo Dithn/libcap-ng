@@ -59,9 +59,8 @@ const volatile int capset_syscall_nr = -1;
 
 /*
  * BPF overview:
- * The BPF side attaches to capability helpers (cap_capable, ns_capable,
- * capable) and syscall tracepoints to capture capability checks only for a
- * target process tree.
+ * The BPF side attaches to cap_capable and syscall tracepoints to capture
+ * capability checks only for a target process tree.
  *
  * The design challenge is noise filtering: distinguish capability checks
  * caused by the target application from kernel-internal checks running under
@@ -272,44 +271,6 @@ static __always_inline int read_syscall(struct pt_regs *ctx)
 #endif
 }
 
-/*
- * fill_event_common - populate the static fields of a cap_event.
- * @ev: event structure to fill.
- * @ctx: pt_regs from the capability hook.
- * @cap: capability number being checked.
- *
- * Captures PID, command name, and syscall number for the current task.
- */
-static __always_inline void fill_event_common(struct cap_event *ev,
-					      struct pt_regs *ctx, int cap)
-{
-	__u64 pid_tgid;
-
-	pid_tgid = bpf_get_current_pid_tgid();
-	ev->pid = pid_tgid >> 32;
-	ev->capability = cap;
-
-	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-
-	ev->syscall_nr = read_syscall(ctx);
-}
-
-/*
- * stash_event - store a partially filled event until the kretprobe fires.
- * @ev: event to stash.
- *
- * Keeps the event keyed by pid_tgid in cap_events_inflight so the return
- * probe can finalize result status before emitting to userspace.
- */
-static __always_inline void stash_event(struct cap_event *ev)
-{
-	__u64 pid_tgid;
-
-	pid_tgid = bpf_get_current_pid_tgid();
-	bpf_map_update_elem(&cap_events_inflight, &pid_tgid, ev,
-			    BPF_ANY);
-}
-
 /* Record a denied check against the syscall invocation that contained it. */
 static __always_inline void mark_syscall_denial(int cap)
 {
@@ -326,25 +287,44 @@ static __always_inline void mark_syscall_denial(int cap)
 }
 
 /*
- * submit_event - finalize and emit a stashed event to the ring buffer.
- * @ret: return code from the capability helper (0 = granted).
- *
- * Looks up the in-flight event, copies it to the ring buffer, sets the result
- * flag (1 = granted, 0 = denied), and removes the temporary entry. Returns 0
- * whether or not an event was emitted.
+ * Observe cap_capable only: capable and ns_capable wrappers reach this
+ * common hook and would overwrite the same per-thread in-flight event.
+ * Their boolean return values also have the opposite meaning to its errno.
  */
-static __always_inline int submit_event(int ret)
+SEC("kprobe/cap_capable")
+int BPF_KPROBE(trace_cap_capable, const struct cred *cred,
+	       struct user_namespace *targ_ns, int cap, unsigned int opts)
 {
-	__u64 pid_tgid;
+	struct cap_event ev = { 0 };
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	ev.pid = pid_tgid >> 32;
+	if (!should_record_pid(ev.pid))
+		return 0;
+
+	ev.capability = cap;
+	ev.cap_opts = opts;
+	ev.syscall_nr = read_syscall(ctx);
+	bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+	if (targ_ns) {
+		struct ns_common *ns = (struct ns_common *)targ_ns;
+
+		ev.targ_ns_inum = BPF_CORE_READ(ns, inum);
+	}
+	bpf_map_update_elem(&cap_events_inflight, &pid_tgid, &ev, BPF_ANY);
+	return 0;
+}
+
+SEC("kretprobe/cap_capable")
+int BPF_KRETPROBE(trace_cap_capable_ret, int ret)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	struct cap_event *stored;
 	struct cap_event *out;
-	int capability;
 
-	pid_tgid = bpf_get_current_pid_tgid();
 	stored = bpf_map_lookup_elem(&cap_events_inflight, &pid_tgid);
 	if (!stored)
 		return 0;
-	capability = stored->capability;
 
 	out = bpf_ringbuf_reserve(&cap_events, sizeof(*out), 0);
 	if (!out)
@@ -353,148 +333,13 @@ static __always_inline int submit_event(int ret)
 	__builtin_memcpy(out, stored, sizeof(*out));
 	out->result = ret ? 0 : 1;
 	if (ret)
-		mark_syscall_denial(capability);
+		mark_syscall_denial(stored->capability);
 
 	bpf_ringbuf_submit(out, 0);
 
 cleanup:
 	bpf_map_delete_elem(&cap_events_inflight, &pid_tgid);
 	return 0;
-}
-
-/*
- * handle_capable - common logic for capability helper entry probes.
- * @ctx: pt_regs for the probed function.
- * @cap: capability number under evaluation.
- * @targ_ns: optional target namespace pointer (may be NULL).
- *
- * Filters by PID first; for traced tasks it populates a cap_event with
- * contextual information and stashes it so the return probe can attach the
- * result. Returns 0 to indicate the kprobe should
- * allow normal execution to continue.
- */
-static __always_inline int handle_capable(struct pt_regs *ctx, int cap,
-					  struct user_namespace *targ_ns,
-					  unsigned int cap_opts)
-{
-	struct cap_event ev = { 0 };
-	__u32 pid;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	if (!should_record_pid(pid))
-		return 0;
-
-	/* Collect task identity and syscall information. */
-	fill_event_common(&ev, ctx, cap);
-	ev.cap_opts = (__u32)cap_opts;
-
-	if (targ_ns) {
-		struct ns_common *ns;
-
-		ns = (struct ns_common *)targ_ns;
-		ev.targ_ns_inum = BPF_CORE_READ(ns, inum);
-	}
-
-	/* Save event so the kretprobe can add the success/failure result. */
-	stash_event(&ev);
-	return 0;
-}
-
-/*
- * trace_cap_capable - entry probe for cap_capable().
- *
- * Delegates to handle_capable(). Arguments mirror the kernel helper and the
- * capability number, namespace pointer, and opts value are recorded for the
- * in-flight event. Returns 0.
- */
-SEC("kprobe/cap_capable")
-int BPF_KPROBE(trace_cap_capable, const struct cred *cred,
-	       struct user_namespace *targ_ns, int cap, unsigned int opts)
-{
-	return handle_capable(ctx, cap, targ_ns, opts);
-}
-
-/*
- * trace_cap_capable_ret - return probe for cap_capable().
- * @ret: kernel return value (0 = granted).
- *
- * Emits the finalized event to userspace. Always returns 0.
- */
-SEC("kretprobe/cap_capable")
-int BPF_KRETPROBE(trace_cap_capable_ret, int ret)
-{
-	return submit_event(ret);
-}
-
-/*
- * trace_ns_capable - entry probe for ns_capable().
- *
- * Uses handle_capable() to capture namespace-aware capability checks. Returns
- * 0.
- */
-SEC("kprobe/ns_capable")
-int BPF_KPROBE(trace_ns_capable, struct user_namespace *ns, int cap)
-{
-	return handle_capable(ctx, cap, ns, 0);
-}
-
-/*
- * trace_ns_capable_ret - return probe for ns_capable().
- * @ret: kernel return value.
- *
- * Emits the stored event with the grant/deny result. Returns 0.
- */
-SEC("kretprobe/ns_capable")
-int BPF_KRETPROBE(trace_ns_capable_ret, int ret)
-{
-	return submit_event(ret);
-}
-
-/*
- * trace_ns_capable_noaudit - entry probe for ns_capable_noaudit().
- *
- * Captures capability checks that bypass kernel audit logging but should be
- * observed by the auditor. Returns 0.
- */
-SEC("kprobe/ns_capable_noaudit")
-int BPF_KPROBE(trace_ns_capable_noaudit, struct user_namespace *ns, int cap)
-{
-	return handle_capable(ctx, cap, ns, 0);
-}
-
-/*
- * trace_ns_capable_noaudit_ret - return probe for ns_capable_noaudit().
- * @ret: kernel return value.
- *
- * Finalizes and emits the stored event. Returns 0.
- */
-SEC("kretprobe/ns_capable_noaudit")
-int BPF_KRETPROBE(trace_ns_capable_noaudit_ret, int ret)
-{
-	return submit_event(ret);
-}
-
-/*
- * trace_capable - entry probe for capable().
- *
- * Handles capability checks that do not involve namespaces. Returns 0.
- */
-SEC("kprobe/capable")
-int BPF_KPROBE(trace_capable, int cap)
-{
-	return handle_capable(ctx, cap, NULL, 0);
-}
-
-/*
- * trace_capable_ret - return probe for capable().
- * @ret: kernel return value.
- *
- * Emits the stored capability event. Returns 0.
- */
-SEC("kretprobe/capable")
-int BPF_KRETPROBE(trace_capable_ret, int ret)
-{
-	return submit_event(ret);
 }
 
 /*
