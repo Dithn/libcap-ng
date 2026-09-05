@@ -139,6 +139,7 @@ Only one
 command is supported. Multiple commands, including oneshot sequences, are
 rejected. An empty assignment resets the command and permits a subsequent
 replacement.
+Unit-file line continuations are rejected; place each directive on one line.
 .PP
 If a capability check targets a user namespace different from the namespace
 in which cap-audit started, the observation is retained in the diagnostic

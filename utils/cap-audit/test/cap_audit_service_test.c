@@ -445,6 +445,34 @@ static void test_exec_start_reset(const char *dir)
 	free_config(&cfg);
 }
 
+/*
+ * test_unit_continuations - reject logical lines the parser cannot assemble.
+ * @dir: temporary directory for unit fixtures.
+ *
+ * Returns no value; fails on accepted continuations or rejected comments.
+ */
+static void test_unit_continuations(const char *dir)
+{
+	service_config_t cfg;
+	const char comments[] =
+		"[Unit]\n# ignored \\\nDescription=ignored\n"
+		"[Service]\n; ignored \\\nExecStart=/usr/bin/true\n";
+
+	expect_parse_failure(dir, "continued-command.service",
+		"[Service]\nExecStart=/usr/bin/echo first \\\n second\n");
+	expect_parse_failure(dir, "continued-comment.service",
+		"[Service]\nExecStart=/usr/bin/echo first \\\n"
+		"# comment\n second\n");
+	expect_parse_failure(dir, "continued-section.service",
+		"[Unit]\nDescription=continued \\\n"
+		"[Service]\nExecStart=/usr/bin/true\n");
+	if (parse_unit(dir, "comments.service", comments, &cfg) != 0)
+		fail("Backslashes in comment lines should be ignored");
+	if (cfg.exec_argc != 1 || strcmp(cfg.exec_argv[0], "/usr/bin/true"))
+		fail("Comments changed the parsed command");
+	free_config(&cfg);
+}
+
 int main(void)
 {
 	char dir[] = "/tmp/libcap-ng-service-XXXXXX";
@@ -462,6 +490,7 @@ int main(void)
 	test_service_ambient(dir);
 	test_capability_lists(dir);
 	test_exec_start_reset(dir);
+	test_unit_continuations(dir);
 
 	rmdir(dir);
 	puts("cap-audit service credential tests passed");

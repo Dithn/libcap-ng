@@ -806,6 +806,17 @@ int parse_service_file(const char *path, service_config_t *cfg)
 		if (cur[0] == '\0' || cur[0] == '#' || cur[0] == ';')
 			continue;
 
+		/*
+		 * systemd joins continued physical lines before parsing sections.
+		 * Reject them even in ignored sections: otherwise a continuation
+		 * could make us interpret text as a new directive or section.
+		 */
+		if (cur[strlen(cur) - 1] == '\\') {
+			fprintf(stderr,
+				"Error: unit line continuations are unsupported\n");
+			goto out;
+		}
+
 		if (cur[0] == '[') {
 			char *end = strchr(cur, ']');
 
