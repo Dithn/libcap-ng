@@ -31,6 +31,8 @@ const char *cap_name_safe(int cap)
 		return "dac_override";
 	case CAP_FOWNER:
 		return "fowner";
+	case CAP_SETPCAP:
+		return "setpcap";
 	case CAP_NET_BIND_SERVICE:
 		return "net_bind_service";
 	case CAP_SYS_CHROOT:
@@ -230,6 +232,30 @@ static void setup_empty_analysis(service_config_t *service)
 	state.app.checks[CAP_SYS_PTRACE].denied = 1;
 }
 
+static void test_setpcap_recommendations(void)
+{
+	service_config_t service;
+	char *output;
+	int source;
+
+	/* Granted use, capset requests and unit intent each justify retention. */
+	for (source = 0; source < 3; source++) {
+		setup_empty_analysis(&service);
+		if (source == 0) {
+			state.app.checks[CAP_SETPCAP].count = 1;
+			state.app.checks[CAP_SETPCAP].granted = 1;
+		} else if (source == 1) {
+			state.app.capset.permitted = 1ULL << CAP_SETPCAP;
+			state.app.capset.successful_calls = 1;
+		} else {
+			service.bounding.caps[CAP_SETPCAP] = true;
+		}
+		output = capture_analysis();
+		expect_line(output, "    CapabilityBoundingSet=setpcap");
+		free(output);
+	}
+}
+
 int main(void)
 {
 	static const char *const denied_guidance[] = {
@@ -254,6 +280,7 @@ int main(void)
 	service_config_t service;
 	char *output;
 
+	test_setpcap_recommendations();
 	setup_analysis(&service);
 	output = capture_analysis();
 

@@ -61,6 +61,8 @@ struct cap_event {
 	__u64 capset_permitted;
 	__u64 capset_inheritable;
 	__u32 event_type;
+	/* Kernel capset arguments proved this SETPCAP check optional. */
+	__u32 capset_inh_optional;
 };
 
 enum syscall_outcome_class {
@@ -145,8 +147,6 @@ struct app_caps {
 	int protected_symlinks;
 	int suid_dumpable;
 	char kernel_version[64];
-	int file_caps;
-	int file_setpcap;
 	struct capset_usage capset;
 };
 
@@ -209,7 +209,6 @@ int handle_cap_event(void *ctx, void *data, size_t data_sz)
 void analyze_capabilities(void);
 void output_json(void);
 void output_yaml(void);
-int include_cap_in_recommendations(int cap);
 const char *cap_name_safe(int cap) __returns_nonnull;
 const char *syscall_name_from_nr(int nr);
 void read_sysctl(const char *path, int *value)
@@ -220,7 +219,6 @@ void read_system_state(struct app_caps *app)
 int resolve_target_exe(pid_t pid, char *exepath, size_t exepath_len)
 	__attr_access ((__write_only__, 2, 3))
 	__wur;
-int inspect_target_file_caps(pid_t pid);
 char *json_escape(const char *input)
 	__attribute_malloc__
 	__attr_dealloc_free

@@ -534,7 +534,6 @@ int main(int argc, char **argv)
 	}
 
 	read_system_state(&state.app);
-	inspect_target_file_caps(child);
 	if (state.app.prog_type == PYTHON && state.verbose)
 		printf("[*] Script interpreter: %s\n", state.app.exe);
 	if (state.service_cfg && state.verbose)
@@ -569,7 +568,11 @@ int main(int argc, char **argv)
 
 	printf("[*] Analyzing results...\n");
 
-	/* Queued events remain evidence even after the target has exited. */
+	/*
+	 * The normal exec/memory filters also cover interpreter teardown.
+	 * Drain time says nothing about when a queued check occurred, so do
+	 * not discard SYS_ADMIN/SETPCAP merely because the target has exited.
+	 */
 	ring_buffer__poll(state.rb, 0);
 
 	if (state.json_output)

@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "cap_audit.h"
@@ -22,6 +24,7 @@
 #define TEST_LINK_NR		1006
 #define TEST_KILL_NR		1007
 #define TEST_ACCESS_NR		1008
+#define TEST_CAPSET_NR		1009
 #define TEST_ERESTARTSYS	512
 
 struct audit_state state;
@@ -46,6 +49,8 @@ const char *cap_name_safe(int cap)
 		return "fowner";
 	case CAP_KILL:
 		return "kill";
+	case CAP_SETPCAP:
+		return "setpcap";
 	case CAP_NET_BIND_SERVICE:
 		return "net_bind_service";
 	case CAP_SYS_PTRACE:
@@ -78,6 +83,8 @@ const char *syscall_name_from_nr(int nr)
 		return "kill";
 	case TEST_ACCESS_NR:
 		return "access";
+	case TEST_CAPSET_NR:
+		return "capset";
 	default:
 		return NULL;
 	}
@@ -433,8 +440,100 @@ static void test_structured_output(void)
 	free(output);
 }
 
+static void test_capset_without_setpcap(void)
+{
+	pid_t child = fork();
+	int status;
+
+	if (child < 0)
+		fail("Failed to fork capset test");
+	if (child == 0) {
+		struct __user_cap_header_struct header = {
+			.version = _LINUX_CAPABILITY_VERSION_3,
+		};
+		struct __user_cap_data_struct data[2] = { 0 };
+
+		/*
+		 * Drop every capability in this child, then repeat the call.
+		 * The second capset succeeds despite its SETPCAP check failing.
+		 * This is the kernel behavior behind the optional-check filter.
+		 */
+		if (syscall(SYS_capset, &header, data) != 0 ||
+		    syscall(SYS_capget, &header, data) != 0)
+			_exit(1);
+		if (data[0].effective || data[0].permitted ||
+		    data[0].inheritable || data[1].effective ||
+		    data[1].permitted || data[1].inheritable)
+			_exit(2);
+		if (syscall(SYS_capset, &header, data) != 0)
+			_exit(3);
+		/* Adding outside old I | P must still fail without SETPCAP. */
+		data[0].inheritable = 1U << CAP_CHOWN;
+		if (syscall(SYS_capset, &header, data) != -1 || errno != EPERM)
+			_exit(4);
+		_exit(0);
+	}
+	if (waitpid(child, &status, 0) != child ||
+	    !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		fail("Kernel capset behavior did not match optional-check rules");
+}
+
+static void test_optional_setpcap(void)
+{
+	struct cap_event event = {
+		.pid = 1234,
+		.capability = CAP_SETPCAP,
+		.result = 1,
+		.syscall_nr = TEST_CAPSET_NR,
+		.event_type = CAP_EVENT_CHECK,
+		.capset_inh_optional = 1,
+	};
+	struct cap_check *check;
+	char *output;
+
+	memset(&state, 0, sizeof(state));
+	state.app.exe = "/usr/bin/capset-target";
+	state.app.pid = event.pid;
+	state.app.capset_nr = TEST_CAPSET_NR;
+	state.baseline_user_ns_inum = 100;
+	check = &state.app.checks[CAP_SETPCAP];
+
+	handle_cap_event(NULL, &event, sizeof(event));
+	if (!state.capset_observed || cap_total_checks(check) != 0)
+		fail("Optional SETPCAP check polluted accounting or lost phase");
+
+	/* The same optional probe from a child is harmless, even if denied. */
+	event.pid++;
+	event.result = 0;
+	event.targ_ns_inum = 200;
+	handle_cap_event(NULL, &event, sizeof(event));
+	if (cap_total_checks(check) != 0 || !state.foreign_target_ns_observed)
+		fail("Optional child check lost namespace scope or was counted");
+
+	/* A required/unknown capset check and a use outside capset survive. */
+	event.capset_inh_optional = 0;
+	event.result = 1;
+	handle_cap_event(NULL, &event, sizeof(event));
+	event.syscall_nr = TEST_IOCTL_NR;
+	handle_cap_event(NULL, &event, sizeof(event));
+	if (cap_total_granted(check) != 2)
+		fail("Non-optional SETPCAP use was suppressed");
+
+	/* Optional use must not erase an explicit successful capset request. */
+	memset(check, 0, sizeof(*check));
+	state.foreign_target_ns_observed = false;
+	emit_capset(0, 1ULL << CAP_SETPCAP, 1ULL << CAP_SETPCAP, 0);
+	if (!cap_is_capset_only(CAP_SETPCAP))
+		fail("Explicit SETPCAP capset request was suppressed");
+	output = capture_output(analyze_capabilities);
+	expect_text(output, "CapabilityBoundingSet=setpcap");
+	free(output);
+}
+
 int main(void)
 {
+	test_capset_without_setpcap();
+	test_optional_setpcap();
 	if (classify_syscall_outcome(0) != SYSCALL_OUTCOME_SUCCESS ||
 	    classify_syscall_outcome(-EPERM) != SYSCALL_OUTCOME_PERMISSION ||
 	    classify_syscall_outcome(-EACCES) != SYSCALL_OUTCOME_PERMISSION ||

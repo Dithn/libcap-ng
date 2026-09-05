@@ -26,13 +26,11 @@
 #include "cap_audit.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <libaudit.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 int resolve_target_exe(pid_t pid, char *exepath, size_t exepath_len)
@@ -68,73 +66,6 @@ int resolve_target_exe(pid_t pid, char *exepath, size_t exepath_len)
 				linkpath, exepath);
 		usleep(10000);
 	}
-
-	return 0;
-}
-
-int inspect_target_file_caps(pid_t pid)
-{
-	char exepath[PATH_MAX];
-	int fd;
-	struct stat st;
-	capng_results_t caps;
-
-	state.app.file_caps = 0;
-	state.app.file_setpcap = 0;
-
-	if (resolve_target_exe(pid, exepath, sizeof(exepath)) < 0)
-		return -1;
-
-	fd = open(exepath, O_RDONLY | O_CLOEXEC);
-	if (fd < 0) {
-		fprintf(stderr, "Warning: open(%s) failed: %s\n",
-			exepath, strerror(errno));
-		return -1;
-	}
-
-	if (fstat(fd, &st) < 0) {
-		fprintf(stderr, "Warning: fstat(%s) failed: %s\n",
-			exepath, strerror(errno));
-		close(fd);
-		return -1;
-	}
-	if (!S_ISREG(st.st_mode)) {
-		fprintf(stderr, "Warning: %s is not a regular file\n",
-			exepath);
-		close(fd);
-		return -1;
-	}
-
-	capng_clear(CAPNG_SELECT_BOTH);
-	if (capng_get_caps_fd(fd)) {
-		if (errno != ENODATA)
-			fprintf(stderr,
-				"Warning: capng_get_caps_fd(%s) failed: %s\n",
-				exepath, strerror(errno));
-		close(fd);
-		if (capng_get_caps_process())
-			fprintf(stderr,
-				"Warning: failed to restore process capabilities\n");
-		return -1;
-	}
-	close(fd);
-
-	caps = capng_have_capabilities(CAPNG_SELECT_CAPS);
-	if (caps == CAPNG_NONE)
-		caps = capng_have_permitted_capabilities();
-	if (caps > CAPNG_NONE)
-		state.app.file_caps = 1;
-
-	if (capng_have_capability(CAPNG_PERMITTED, CAP_SETPCAP) ||
-	    capng_have_capability(CAPNG_INHERITABLE, CAP_SETPCAP))
-		state.app.file_setpcap = 1;
-
-	if (state.verbose)
-		printf("[*] File caps source: %s (has_caps=%d setpcap=%d)\n",
-		       exepath, state.app.file_caps, state.app.file_setpcap);
-
-	if (capng_get_caps_process())
-		fprintf(stderr, "Warning: failed to restore process capabilities\n");
 
 	return 0;
 }

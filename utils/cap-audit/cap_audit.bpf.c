@@ -43,6 +43,7 @@
 #define CAP_VERSION_1	0x19980330
 #define CAP_VERSION_2	0x20071026
 #define CAP_VERSION_3	0x20080522
+#define CAP_SETPCAP	8
 
 struct cap_user_header {
 	__u32 version;
@@ -153,6 +154,7 @@ struct cap_event {
 	__u64 capset_permitted;
 	__u64 capset_inheritable;
 	__u32 event_type;
+	__u32 capset_inh_optional;
 };
 
 // This sets the limit for how many child processes can be traced.
@@ -199,6 +201,7 @@ struct syscall_state {
 	__u64 capset_effective;
 	__u64 capset_permitted;
 	__u64 capset_inheritable;
+	__u64 capset_optional_cred;
 	int nr;
 	__u8 capset_valid;
 };
@@ -287,6 +290,53 @@ static __always_inline void mark_syscall_denial(int cap)
 }
 
 /*
+ * cap_capset() checks SETPCAP through cap_inh_is_capped() even when the
+ * requested inheritable set is already allowed without that capability.
+ * A granted probe in that case is not a deployment requirement. Identify
+ * it from the kernel's copied arguments, not a racy userspace snapshot or
+ * the initial executable's file xattr (children may use different caps).
+ *
+ * Keep the observation unless all reads succeed and new I is a subset of
+ * old I | old P. Compare opaque storage: the same bitwise subset test works
+ * for both kernel_cap_t layouts (u32[2] and u64), on either endianness.
+ * The return probe bounds this annotation to this thread's cap_capset call.
+ */
+SEC("kprobe/cap_capset")
+int BPF_KPROBE(trace_cap_capset, struct cred *new,
+	       const struct cred *old, const kernel_cap_t *effective,
+	       const kernel_cap_t *inheritable)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct syscall_state *syscall;
+	__u64 new_i, old_i, old_p;
+
+	syscall = bpf_map_lookup_elem(&current_syscalls, &pid_tgid);
+	if (!syscall)
+		return 0;
+	syscall->capset_optional_cred = 0;
+	if (bpf_core_type_size(kernel_cap_t) != sizeof(new_i) ||
+	    bpf_probe_read_kernel(&new_i, sizeof(new_i), inheritable) ||
+	    bpf_core_read(&old_i, sizeof(old_i), &old->cap_inheritable) ||
+	    bpf_core_read(&old_p, sizeof(old_p), &old->cap_permitted))
+		return 0;
+	if ((new_i & ~(old_i | old_p)) == 0)
+		syscall->capset_optional_cred = (__u64)old;
+	return 0;
+}
+
+SEC("kretprobe/cap_capset")
+int BPF_KRETPROBE(trace_cap_capset_ret, int ret)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct syscall_state *syscall;
+
+	syscall = bpf_map_lookup_elem(&current_syscalls, &pid_tgid);
+	if (syscall)
+		syscall->capset_optional_cred = 0;
+	return 0;
+}
+
+/*
  * Observe cap_capable only: capable and ns_capable wrappers reach this
  * common hook and would overwrite the same per-thread in-flight event.
  * Their boolean return values also have the opposite meaning to its errno.
@@ -297,6 +347,7 @@ int BPF_KPROBE(trace_cap_capable, const struct cred *cred,
 {
 	struct cap_event ev = { 0 };
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct syscall_state *syscall;
 
 	ev.pid = pid_tgid >> 32;
 	if (!should_record_pid(ev.pid))
@@ -305,6 +356,11 @@ int BPF_KPROBE(trace_cap_capable, const struct cred *cred,
 	ev.capability = cap;
 	ev.cap_opts = opts;
 	ev.syscall_nr = read_syscall(ctx);
+	syscall = bpf_map_lookup_elem(&current_syscalls, &pid_tgid);
+	if (cap == CAP_SETPCAP && syscall && syscall->capset_optional_cred &&
+	    syscall->capset_optional_cred == (__u64)cred &&
+	    targ_ns == BPF_CORE_READ(cred, user_ns))
+		ev.capset_inh_optional = 1;
 	bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
 	if (targ_ns) {
 		struct ns_common *ns = (struct ns_common *)targ_ns;
@@ -332,7 +388,7 @@ int BPF_KRETPROBE(trace_cap_capable_ret, int ret)
 
 	__builtin_memcpy(out, stored, sizeof(*out));
 	out->result = ret ? 0 : 1;
-	if (ret)
+	if (ret && !out->capset_inh_optional)
 		mark_syscall_denial(stored->capability);
 
 	bpf_ringbuf_submit(out, 0);

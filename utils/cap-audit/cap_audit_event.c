@@ -30,11 +30,17 @@
 
 static int is_always_noise(const struct cap_event *e)
 {
+	/* Exec credential transitions are independent of application work. */
 	if (e->syscall_nr == state.app.execve_nr &&
 	   (e->capability == CAP_SYS_ADMIN ||
 	    e->capability == CAP_SETPCAP))
 		return 1;
 
+	/*
+	 * cap_vm_enough_memory probes SYS_ADMIN for overcommit accounting,
+	 * including during interpreter shutdown. NOAUDIT alone is not enough:
+	 * enforcement checks also use it, so retain the syscall/capability match.
+	 */
 	if ((e->cap_opts & CAP_OPT_NOAUDIT) &&
 	    e->capability == CAP_SYS_ADMIN &&
 	    (e->syscall_nr == state.app.brk_nr ||
@@ -197,6 +203,20 @@ int handle_cap_event(void *ctx __attribute__((unused)), void *data,
 	}
 
 	observe_initial_capset(e);
+
+	/*
+	 * The BPF cap_capset probe proved that new I fits within old I | P,
+	 * so this SETPCAP check only selects an optional privilege shortcut.
+	 * Keep phase detection and namespace diagnostics above; successful
+	 * capset payloads still independently constrain deployment sets.
+	 * Do not suppress other SETPCAP uses or infer this from file xattrs.
+	 */
+	if (e->capability == CAP_SETPCAP && e->capset_inh_optional) {
+		if (state.verbose)
+			printf("[CAP] Optional SETPCAP check in capset; "
+			       "inheritable change does not require it\n");
+		return 0;
+	}
 
 	if (e->capability >= 0 && e->capability <= CAP_LAST_CAP) {
 		struct cap_check *check;

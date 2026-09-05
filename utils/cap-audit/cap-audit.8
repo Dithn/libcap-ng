@@ -51,6 +51,13 @@ remove it from the application's capability setup, exercise representative
 code paths in additional runs, and then narrow the deployment boundary. Failed
 capset calls do not establish this constraint.
 .PP
+The kernel also checks CAP_SETPCAP during capset when the requested change
+does not require it. Cap-audit excludes that check from capability-use counts
+only when the kernel's requested inheritable set is contained in the union of
+the old inheritable and permitted sets. Other CAP_SETPCAP checks are retained, as are
+explicit successful capset requests and configured service capabilities.
+This decision does not depend on the executable's file capabilities.
+.PP
 Runtime tracing requires root or the CAP_BPF and CAP_PERFMON capabilities, along with kernel BTF data in
 \fI/sys/kernel/btf/vmlinux\fP.
 .SH OPTIONS

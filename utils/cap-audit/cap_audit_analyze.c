@@ -35,15 +35,6 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-int include_cap_in_recommendations(int cap)
-{
-	if (cap == CAP_SETPCAP && state.app.file_caps &&
-	    !state.app.file_setpcap)
-		return 0;
-
-	return 1;
-}
-
 static void cap_name_upper_buf(int cap, char *buf, size_t buf_len)
 {
 	const char *name = cap_name_safe(cap);
@@ -181,9 +172,6 @@ static void print_wrappedf(const char *indent, const char *fmt, ...)
 
 static int cap_in_programmatic_set(int cap)
 {
-	if (!include_cap_in_recommendations(cap))
-		return 0;
-
 	if (state.capset_observed)
 		return state.app.checks[cap].op_granted > 0;
 
@@ -380,8 +368,7 @@ static int svc_cap_configured_unobserved(const service_config_t *cfg,
 	int in_bounding;
 	int in_ambient;
 
-	if (!include_cap_in_recommendations(cap) ||
-	    cap_requested_by_capset(cap) || cap_total_checks(check) > 0)
+	if (cap_requested_by_capset(cap) || cap_total_checks(check) > 0)
 		return 0;
 
 	in_bounding = cfg->bounding.seen && cfg->bounding.caps[cap];
@@ -398,8 +385,6 @@ static void svc_build_recommendations(const service_config_t *cfg,
 
 	memset(caps, 0, sizeof(*caps));
 	for (cap = 0; cap <= CAP_LAST_CAP; cap++) {
-		if (!include_cap_in_recommendations(cap))
-			continue;
 		/*
 		 * A denied check may be advisory or precede a fallback, so it
 		 * does not prove that the capability is required.
@@ -444,8 +429,7 @@ static void svc_print_needed_caps(void)
 	for (cap = 0; cap <= CAP_LAST_CAP; cap++) {
 		struct cap_check *check = &state.app.checks[cap];
 
-		if (!cap_required_union(check) ||
-		    !include_cap_in_recommendations(cap))
+		if (!cap_required_union(check))
 			continue;
 		if (!found)
 			printf("\n");
@@ -469,7 +453,7 @@ static void svc_print_phase_caps(const char *label, int operational)
 		unsigned long granted;
 
 		granted = operational ? check->op_granted : check->granted;
-		if (granted == 0 || !include_cap_in_recommendations(cap))
+		if (granted == 0)
 			continue;
 		if (!first)
 			printf(" ");
@@ -715,8 +699,7 @@ static void svc_print_denied_review(const service_config_t *cfg)
 		const char *label;
 
 		if (cap_total_denied(check) == 0 ||
-		    cap_total_granted(check) > 0 ||
-		    !include_cap_in_recommendations(cap))
+		    cap_total_granted(check) > 0)
 			continue;
 
 		if (!found)
@@ -757,8 +740,7 @@ static void svc_print_recommended_denials(void)
 		struct cap_check *check = &state.app.checks[cap];
 
 		if (cap_total_denied(check) == 0 ||
-		    !cap_required_union(check) ||
-		    !include_cap_in_recommendations(cap))
+		    !cap_required_union(check))
 			continue;
 		caps[cap] = true;
 		found = 1;
@@ -783,8 +765,7 @@ static void svc_print_capset_only(const service_config_t *cfg)
 	int found = 0;
 
 	for (cap = 0; cap <= CAP_LAST_CAP; cap++) {
-		if (!cap_is_capset_only(cap) ||
-		    !include_cap_in_recommendations(cap))
+		if (!cap_is_capset_only(cap))
 			continue;
 		caps[cap] = true;
 		found = 1;
@@ -1238,9 +1219,6 @@ void analyze_capabilities(void)
 				if (check->reason)
 					print_wrappedf("    Reason: ",
 						       "%s", check->reason);
-				if (!include_cap_in_recommendations(i))
-					print_wrapped_text("    Note: ",
-							   "Internal to capability setup; excluded from recommendations.");
 				printf("\n");
 			}
 		}
@@ -1263,9 +1241,6 @@ void analyze_capabilities(void)
 				if (check->reason)
 					print_wrappedf("    Reason: ",
 						       "%s", check->reason);
-				if (!include_cap_in_recommendations(i))
-					print_wrapped_text("    Note: ",
-							   "Internal to capability setup; excluded from recommendations.");
 				printf("\n");
 			}
 		}
@@ -1287,9 +1262,6 @@ void analyze_capabilities(void)
 				if (check->op_reason)
 					print_wrappedf("    Reason: ",
 						       "%s", check->op_reason);
-				if (!include_cap_in_recommendations(i))
-					print_wrapped_text("    Note: ",
-							   "Internal to capability setup; excluded from recommendations.");
 				printf("\n");
 			}
 		}
@@ -1470,8 +1442,7 @@ void analyze_capabilities(void)
 		printf("    AmbientCapabilities=");
 		first = 1;
 		for (i = 0; i <= CAP_LAST_CAP; i++) {
-			if (cap_is_compat_requirement(i) &&
-			    include_cap_in_recommendations(i)) {
+			if (cap_is_compat_requirement(i)) {
 				if (!first)
 					printf(" ");
 				printf("%s", cap_name_safe(i));
@@ -1482,8 +1453,7 @@ void analyze_capabilities(void)
 		printf("    CapabilityBoundingSet=");
 		first = 1;
 		for (i = 0; i <= CAP_LAST_CAP; i++) {
-			if (cap_is_compat_requirement(i) &&
-			    include_cap_in_recommendations(i)) {
+			if (cap_is_compat_requirement(i)) {
 				if (!first)
 					printf(" ");
 				printf("%s", cap_name_safe(i));
@@ -1498,8 +1468,7 @@ void analyze_capabilities(void)
 					   "File capabilities must include initialization requirements. The application drops to the operational set internally via capset.");
 		printf("    filecap /path/to/binary");
 		for (i = 0; i <= CAP_LAST_CAP; i++) {
-			if (cap_is_compat_requirement(i) &&
-			    include_cap_in_recommendations(i))
+			if (cap_is_compat_requirement(i))
 				printf(" %s", cap_name_safe(i));
 		}
 		printf("\n\n");
@@ -1511,8 +1480,7 @@ void analyze_capabilities(void)
 		printf("    docker run --user $(id -u):$(id -g) \\\n");
 		printf("      --cap-drop=ALL \\\n");
 		for (i = 0; i <= CAP_LAST_CAP; i++) {
-			if (cap_is_compat_requirement(i) &&
-			    include_cap_in_recommendations(i))
+			if (cap_is_compat_requirement(i))
 				printf("      --cap-add=%s \\\n",
 				       cap_name_safe(i));
 		}
@@ -1530,8 +1498,7 @@ void analyze_capabilities(void)
 		printf("          - ALL\n");
 		printf("        add:\n");
 		for (i = 0; i <= CAP_LAST_CAP; i++) {
-			if (cap_is_compat_requirement(i) &&
-			    include_cap_in_recommendations(i))
+			if (cap_is_compat_requirement(i))
 				printf("          - %s\n", cap_name_safe(i));
 		}
 		printf("\n");
