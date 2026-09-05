@@ -278,6 +278,10 @@ static void test_exec_start_privilege_prefixes(const char *dir)
 	expect_parse_failure(dir, "plus.service", plus_unit);
 	expect_parse_failure(dir, "combined-plus.service", combined_plus_unit);
 	expect_parse_failure(dir, "double-bang.service", double_bang_unit);
+	expect_parse_failure(dir, "argv0.service",
+		"[Service]\nExecStart=@/usr/bin/echo alias payload\n");
+	expect_parse_failure(dir, "combined-argv0.service",
+		"[Service]\nExecStart=-!:@/usr/bin/echo alias payload\n");
 }
 
 static void test_exec_start_environment_words(const char *dir)

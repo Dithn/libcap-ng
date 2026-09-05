@@ -463,6 +463,15 @@ static int strip_exec_prefixes(service_config_t *cfg, int *no_env_expand)
 	while (arg0[offset] == '-' || arg0[offset] == '@' ||
 	       arg0[offset] == ':' || arg0[offset] == '+' ||
 	       arg0[offset] == '!') {
+		/*
+		 * @ separates the executable path from argv[0], which our
+		 * command model cannot represent. Stripping it changes arguments.
+		 */
+		if (arg0[offset] == '@') {
+			fprintf(stderr,
+				"Error: ExecStart '@' prefix is unsupported\n");
+			return -1;
+		}
 		if (arg0[offset] == ':')
 			*no_env_expand = 1;
 		if (arg0[offset] == '+') {

@@ -129,6 +129,10 @@ prefix and the legacy
 .B !!
 prefix are rejected because cap-audit cannot safely simulate their execution
 semantics.
+The
+.B @
+prefix is also rejected because the command model does not support a separate
+executable path and overridden first argument.
 .PP
 If a capability check targets a user namespace different from the namespace
 in which cap-audit started, the observation is retained in the diagnostic
