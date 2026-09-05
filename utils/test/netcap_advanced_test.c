@@ -148,6 +148,28 @@ static void test_tree_groups(void)
 	free_model(&m);
 }
 
+#ifdef HAVE_NETCAP_VSOCK
+static void test_vsock_owners(void)
+{
+	struct model m = { 0 };
+	struct process_info first = { .pid = 100 }, second = { .pid = 200 };
+	struct process_info *owners[] = { &first, &second, &first };
+	struct inode_proc ip = { .procs = owners, .n = 3 };
+	struct endpoint *e;
+
+	if (add_vsock_endpoint(&m, "stream", VMADDR_CID_ANY, 22, &ip) ||
+	    add_vsock_endpoint(&m, "stream", VMADDR_CID_ANY, 22, &ip))
+		fail("Cannot build VSOCK fixture");
+	e = &m.eps[0];
+	if (m.eps_n != 1 || e->procs_n != 2 || e->procs[0] != &first ||
+	    e->procs[1] != &second || e->plane != PLANE_VSOCK ||
+	    e->vsock_cid != VMADDR_CID_ANY || e->port != 22 ||
+	    strcmp(e->label, "stream:cid=ANY:22"))
+		fail("VSOCK identity or owner merging changed");
+	free_model(&m);
+}
+#endif
+
 #ifdef HAVE_NETCAP_BLUETOOTH
 static void test_bluetooth_tables(void)
 {
@@ -203,6 +225,9 @@ int main(void)
 {
 	test_process_rendering();
 	test_tree_groups();
+#ifdef HAVE_NETCAP_VSOCK
+	test_vsock_owners();
+#endif
 #ifdef HAVE_NETCAP_BLUETOOTH
 	test_bluetooth_tables();
 #endif

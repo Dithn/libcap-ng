@@ -182,7 +182,6 @@ struct endpoint {
 	char *label;
 	unsigned int port;
 	unsigned int vsock_cid;
-	int has_vsock;
 	enum plane_kind plane;
 	char *ifname;
 	char *ifaddr;
@@ -1637,6 +1636,25 @@ static struct inode_proc *lookup_inode(struct model *m, unsigned long inode)
 	return &m->inode_map[idx];
 }
 
+/* Socket and VSOCK endpoints keep one pointer per PID, in discovery order. */
+static int add_endpoint_processes(struct endpoint *e, const struct inode_proc *ip)
+{
+	size_t i, j;
+
+	for (i = 0; i < ip->n; i++) {
+		for (j = 0; j < e->procs_n; j++)
+			if (e->procs[j]->pid == ip->procs[i]->pid)
+				break;
+		if (j < e->procs_n)
+			continue;
+		if (e->procs_n == e->procs_cap &&
+		    vec_grow((void **)&e->procs, &e->procs_cap, sizeof(*e->procs)))
+			return -1;
+		e->procs[e->procs_n++] = ip->procs[i];
+	}
+	return 0;
+}
+
 /*
  * add_endpoint - add/merge one inet or packet endpoint in @m.
  * @m: model receiving endpoint data.
@@ -1654,7 +1672,7 @@ static int add_endpoint(struct model *m, const char *proto, const char *bind,
 	const char *ifaddr, const struct endpoint_attrs *attrs,
 	struct inode_proc *ip)
 {
-	size_t i, j;
+	size_t i;
 	struct endpoint *e;
 	char label[256];
 
@@ -1681,36 +1699,19 @@ static int add_endpoint(struct model *m, const char *proto, const char *bind,
 	e->label = xstrdup(label);
 	e->port = port;
 	e->vsock_cid = 0;
-	e->has_vsock = 0;
 	e->plane = plane;
 	e->ifname = xstrdup(ifname);
 	e->ifaddr = xstrdup(ifaddr);
 	e->wildcard_bind = attrs->wildcard;
 	e->reuseport = attrs->reuseport;
 	if (!e->proto || !e->bind || !e->label || !e->ifname || !e->ifaddr) {
-		free(e->proto);
-		free(e->bind);
-		free(e->label);
-		free(e->ifname);
-		free(e->ifaddr);
+		free_endpoint(e);
 		memset(e, 0, sizeof(*e));
 		return -1;
 	}
 	m->eps_n++;
 add_procs:
-	for (j = 0; j < ip->n; j++) {
-		size_t k;
-		for (k = 0; k < e->procs_n; k++)
-			if (e->procs[k]->pid == ip->procs[j]->pid)
-				goto next;
-		if (e->procs_n == e->procs_cap && vec_grow((void **)&e->procs,
-		    &e->procs_cap, sizeof(struct process_info *)))
-			return -1;
-		e->procs[e->procs_n++] = ip->procs[j];
-next:
-		;
-	}
-	return 0;
+	return add_endpoint_processes(e, ip);
 }
 
 #ifdef HAVE_NETCAP_VSOCK
@@ -1728,7 +1729,7 @@ next:
 static int add_vsock_endpoint(struct model *m, const char *type,
 	unsigned int cid, unsigned int port, struct inode_proc *ip)
 {
-	size_t i, j;
+	size_t i;
 	struct endpoint *e;
 	char label[128];
 	char cidbuf[32];
@@ -1754,37 +1755,19 @@ static int add_vsock_endpoint(struct model *m, const char *type,
 	e->label = xstrdup(label);
 	e->port = port;
 	e->vsock_cid = cid;
-	e->has_vsock = 1;
 	e->plane = PLANE_VSOCK;
 	e->ifname = xstrdup("");
 	e->ifaddr = xstrdup("");
 	e->reuseport = 0;
 	if (!e->proto || !e->bind || !e->label || !e->ifname || !e->ifaddr) {
-		free(e->proto);
-		free(e->bind);
-		free(e->label);
-		free(e->ifname);
-		free(e->ifaddr);
+		free_endpoint(e);
 		memset(e, 0, sizeof(*e));
 		return -1;
 	}
 	m->eps_n++;
 
 add_procs:
-	for (j = 0; j < ip->n; j++) {
-		size_t k;
-
-		for (k = 0; k < e->procs_n; k++)
-			if (e->procs[k]->pid == ip->procs[j]->pid)
-				goto next;
-		if (e->procs_n == e->procs_cap && vec_grow((void **)&e->procs,
-		    &e->procs_cap, sizeof(struct process_info *)))
-			return -1;
-		e->procs[e->procs_n++] = ip->procs[j];
-next:
-		;
-	}
-	return 0;
+	return add_endpoint_processes(e, ip);
 }
 #endif
 
