@@ -258,7 +258,7 @@ static int finalize_user(service_config_t *cfg)
 	int rc;
 
 	if (!cfg->user_is_set) {
-		if (cfg->dynamic_user_set && cfg->dynamic_user)
+		if (cfg->dynamic_user)
 			return fallback_to_nobody(cfg);
 		return 0;
 	}
@@ -268,7 +268,7 @@ static int finalize_user(service_config_t *cfg)
 		return 0;
 
 	/* Only a missing dynamic name is eligible for the nobody fallback. */
-	if (rc == -ENOENT && cfg->dynamic_user_set && cfg->dynamic_user)
+	if (rc == -ENOENT && cfg->dynamic_user)
 		return fallback_to_nobody(cfg);
 
 	fprintf(stderr, "Error: invalid or unresolved User=%s\n",
@@ -732,15 +732,6 @@ static int set_group(service_config_t *cfg, const char *value)
 	return 0;
 }
 
-static int set_bool_directive(bool *value, bool *is_set, const char *raw)
-{
-	if (parse_bool_value(raw, value) != 0)
-		return -1;
-
-	*is_set = true;
-	return 0;
-}
-
 static int handle_service_directive(service_config_t *cfg,
 				    const char *key, const char *value)
 {
@@ -756,8 +747,7 @@ static int handle_service_directive(service_config_t *cfg,
 	    !strcmp(key, "BoundingSet"))
 		return parse_cap_list(&cfg->bounding, value);
 	if (!strcmp(key, "NoNewPrivileges")) {
-		if (set_bool_directive(&cfg->no_new_privs,
-				       &cfg->no_new_privs_set, value) != 0) {
+		if (parse_bool_value(value, &cfg->no_new_privs) != 0) {
 			fprintf(stderr,
 				"Error: invalid NoNewPrivileges=%s\n",
 				value);
@@ -766,8 +756,7 @@ static int handle_service_directive(service_config_t *cfg,
 		return 0;
 	}
 	if (!strcmp(key, "DynamicUser")) {
-		if (set_bool_directive(&cfg->dynamic_user,
-				       &cfg->dynamic_user_set, value) != 0) {
+		if (parse_bool_value(value, &cfg->dynamic_user) != 0) {
 			fprintf(stderr, "Error: invalid DynamicUser=%s\n",
 				value);
 			return -1;

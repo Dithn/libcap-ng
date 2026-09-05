@@ -167,6 +167,9 @@ static void test_valid_credentials(const char *dir)
 		"User=0\n"
 		"Group=0\n"
 		"SupplementaryGroups=1 2\n"
+		/* A later false assignment must undo an earlier true value. */
+		"DynamicUser=yes\nDynamicUser=no\n"
+		"NoNewPrivileges=yes\nNoNewPrivileges=no\n"
 		"ExecStart=/usr/bin/true\n";
 
 	if (parse_unit(dir, "valid.service", unit, &cfg) != 0)
@@ -175,6 +178,8 @@ static void test_valid_credentials(const char *dir)
 	    !cfg.group_is_set || cfg.group_gid != 0 ||
 	    cfg.sup_groups.count != 2)
 		fail("Valid numeric credentials were not preserved");
+	if (cfg.dynamic_user || cfg.no_new_privs)
+		fail("Boolean directives did not preserve the last assignment");
 	free_config(&cfg);
 }
 
@@ -207,6 +212,10 @@ static void test_invalid_credentials(const char *dir)
 		{ "dynamic-negative-user.service",
 		  "[Service]\nDynamicUser=yes\nUser=-1\n"
 		  "ExecStart=/usr/bin/true\n" },
+		{ "invalid-dynamic-user.service",
+		  "[Service]\nDynamicUser=invalid\nExecStart=/usr/bin/true\n" },
+		{ "invalid-no-new-privileges.service",
+		  "[Service]\nNoNewPrivileges=invalid\nExecStart=/usr/bin/true\n" },
 	};
 	size_t i;
 

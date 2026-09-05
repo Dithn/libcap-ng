@@ -173,9 +173,7 @@ typedef struct {
 	cap_set_t bounding;
 	cap_set_t ambient;
 	bool dynamic_user;
-	bool dynamic_user_set;
 	bool no_new_privs;
-	bool no_new_privs_set;
 	char *service_type;
 	char *exec_start;
 	char **exec_argv;
