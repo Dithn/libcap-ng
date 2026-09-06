@@ -198,9 +198,7 @@ static void print_tree_node(const struct proc_tree *tree,
 	size_t child_total = 0;
 	size_t child_seen = 0;
 	size_t i;
-	char head[64];
 	char *text;
-	size_t text_len;
 	char *cont_prefix;
 	size_t prefix_len = (prefix ? strlen(prefix) : 0) + sizeof("│  ");
 
@@ -209,15 +207,12 @@ static void print_tree_node(const struct proc_tree *tree,
 		return;
 	proc_tree_build_child_prefix(cont_prefix, prefix_len, prefix, is_last);
 
-	snprintf(head, sizeof(head), "%s(%d:%s) [", proc->cmd,
-		 proc->pid, proc->account);
-	text_len = strlen(head) + strlen(proc->caps_text) + 2;
-	text = malloc(text_len);
-	if (!text) {
+	/* Escaping a process name can expand it beyond a fixed-size label. */
+	if (asprintf(&text, "%s(%d:%s) [%s]", proc->cmd, proc->pid,
+		     proc->account, proc->caps_text) < 0) {
 		free(cont_prefix);
 		return;
 	}
-	snprintf(text, text_len, "%s%s]", head, proc->caps_text);
 	proc_tree_print_node(prefix, is_last, text, tree->width);
 	free(text);
 
