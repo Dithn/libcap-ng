@@ -2108,20 +2108,24 @@ static void bt_load_adapters(void)
 
 	while ((ent = readdir(d))) {
 		struct hci_dev_info di;
+		size_t name_len;
 		int dev_id;
 
 		if (ent->d_name[0] == '.')
 			continue;
 		if (tmp_n == BT_ADAPTER_CACHE_MAX)
 			break;
+		/* Keep complete adapter names so cached identities stay exact. */
+		name_len = strlen(ent->d_name);
+		if (name_len >= sizeof(tmp[tmp_n].name))
+			continue;
 		if (bt_parse_adapter_dev_id(ent->d_name, &dev_id))
 			continue;
 		memset(&di, 0, sizeof(di));
 		di.dev_id = (uint16_t)dev_id;
 		if (ioctl(fd, HCIGETDEVINFO, &di) < 0)
 			goto fail;
-		snprintf(tmp[tmp_n].name, sizeof(tmp[tmp_n].name), "%s",
-			ent->d_name);
+		memcpy(tmp[tmp_n].name, ent->d_name, name_len + 1);
 		bt_format_addr(&di.bdaddr, tmp[tmp_n].addr,
 			sizeof(tmp[tmp_n].addr));
 		tmp_n++;
