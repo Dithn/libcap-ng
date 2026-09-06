@@ -250,7 +250,13 @@ int main(int argc, char *argv[])
 				strerror(errno));
 			return 1;
 		}
-		if (have_path_stat && fstat(fd, &fbuf) == 0 &&
+		if ((fstat(fd, &fbuf))) {
+			fprintf(stderr, "Could not fstat %s (%s)\n",
+					path, strerror(errno));
+			close(fd);
+			return 1;
+		}
+		if (have_path_stat &&
 		    (fbuf.st_dev != path_sbuf.st_dev ||
 		     fbuf.st_ino != path_sbuf.st_ino)) {
 			fprintf(stderr,
