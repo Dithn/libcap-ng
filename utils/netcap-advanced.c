@@ -1562,7 +1562,7 @@ static void collect_proc_inodes(struct model *m)
 		if (!fds)
 			continue;
 		while ((fdent = readdir(fds))) {
-			char lpath[128], link[256], *s;
+			char link[256], *s;
 			ssize_t l;
 			unsigned long inode;
 			int fdnum;
@@ -1572,8 +1572,9 @@ static void collect_proc_inodes(struct model *m)
 
 			if (fdent->d_name[0] == '.')
 				continue;
-			snprintf(lpath, sizeof(lpath), "%s/%s", fdpath, fdent->d_name);
-			l = readlink(lpath, link, sizeof(link) - 1);
+			/* Resolve links in the directory we are enumerating. */
+			l = readlinkat(dirfd(fds), fdent->d_name, link,
+				       sizeof(link) - 1);
 			if (l < 0)
 				continue;
 			link[l] = 0;
