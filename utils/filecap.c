@@ -110,7 +110,8 @@ static int check_file(const char *fpath,
 			printf("\n");
 		}
 		close(fd);
-	}
+	} // Ignore open failure since printing a warning clutters output
+	  // There's a lot of non-root unreadble files in /usr
 	return ret;
 }
 
